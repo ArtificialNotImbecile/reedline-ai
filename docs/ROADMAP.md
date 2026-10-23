@@ -20,11 +20,13 @@ See [project memory](project-memory.md) and [risk review](risk-review.md) for ex
 
 `--mode desktop|mobile` selects interaction explicitly. Desktop retains Reedline. Mobile provides bounded, narrow-screen numbered candidates, actual typed workflow steps, ordinary text accept/cancel and an extra text confirmation under risk policy `confirm`. Existing local-first completion and async backend are reused. No execution or SSH inference occurs. See [mobile-mode.md](mobile-mode.md) for canonical-terminal limits and exact coverage.
 
-## Next, in agreed order (not implemented)
+## Native adapter milestone
 
-1. Per-shell native adapters around the shared Rust backend, opt-in and independently tested. Preserve each host's keybindings, history, cursor units and acceptance guard; do not replace all shells with a custom editor.
+Opt-in adapters now share a bounded Rust stdin JSON bridge with explicit shell/cwd/buffer/cursor identity. The [Bash guide](bash-adapter.md) records the real bind-x request/preview/accept UX and isolated PTY coverage. This is not an inline predictor and does not replace native editing, completion or history. Model suggestions remain insertion-only; local structured workflow/memory integration is still future work for the adapters.
 
-## Adapter research, not shipped
+PowerShell, Nushell and CMD+Clink have separate platform validation requirements; do not interpret Rust protocol tests or Linux Bash PTYs as proof of their behavior. Real SSH work is deferred until the user provides an authorized environment.
+
+## Platform API references and future predictor research
 
 - Bash/Readline: an opt-in `bind -x` command can read/edit `READLINE_LINE` and `READLINE_POINT`; a full asynchronous inline predictor is separate work. Stock programmable completion is not an as-you-type predictor API. [Bash manual](https://www.gnu.org/s/bash/manual/bash.html)
 - PowerShell: compiled `ICommandPredictor` module registered via SubsystemManager, normally PowerShell ≥7.2 and PSReadLine ≥2.2.2. Preserve HistoryAndPlugin/native behavior. Windows PowerShell 5.1 is not this plugin route. [Official predictor guide](https://learn.microsoft.com/en-us/powershell/scripting/dev-cross-plat/create-cmdline-predictor)
@@ -37,4 +39,4 @@ The isolated [SSH feasibility experiment](ssh-adapter-feasibility.md) validates 
 
 ## Distribution
 
-Local `cargo install --path . --locked` installs the standalone binary, not host-shell integration. `cargo install --git ... --rev VERIFIED_COMMIT --locked` requires that revision to be published. No crates.io publication, apt repository/.deb, automatic shell setup, or name/trademark clearance is claimed. Keep source-build distribution truthful until each packaging route is created and verified. No hosted CI or paid model calls are part of local validation.
+Local `cargo install --path . --locked` installs a binary with bundled Bash adapter assets. `reedline-ai adapter install --shell bash --directory NEW_DIRECTORY` extracts them explicitly; it never edits profiles or enables itself. See [installation and removal](install.md). `cargo install --git ... --rev VERIFIED_COMMIT --locked` requires that revision to be published. No crates.io publication, apt repository/.deb, automatic shell setup, or name/trademark clearance is claimed. Keep source-build distribution truthful until each packaging route is created and verified. No hosted CI or paid model calls are part of local validation.

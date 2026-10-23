@@ -52,7 +52,7 @@ See the separate [15-request synthetic latency report](latency-benchmark.md). Th
 
 The initial published commit `459b8747ae6b7b605826b3f24f635ba6c0d65b44` passed [hosted checks on Linux, macOS and Windows](https://github.com/ArtificialNotImbecile/reedline-ai/actions/runs/39926660746), including Linux PTY smoke, on 2026-10-23. Hosted CI is now manual-only (`workflow_dispatch`), with no push or pull-request trigger. Routine validation uses `bash scripts/ci-local.sh` on Linux/macOS, without starting hosted workflows or calling remote model APIs. A local pass verifies that host only; it does not establish a new cross-platform result.
 
-Known limitations remain intentional: no command execution, no native shell integration, no native FIM-token adapter, no streaming or active HTTP cancellation, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
+Known limitations remain intentional: no automatic command execution, no universal inline shell predictor, no native FIM-token adapter, no streaming or active HTTP cancellation, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
 
 Independent review found two bugs in the first draft: raw pasted controls could reach default ANSI rendering before validation, and Reedline input batching could accept stale or repeated hints. The iteration introduced pre-render input filtering and input-ordered, one-shot rendered-hint acceptance, with dedicated Rust and PTY regression coverage. This record describes checks, not a formal security certification.
 
@@ -83,3 +83,39 @@ hint. Its setup now waits up to three seconds for a fresh visible `atus` hint;
 regression input batches and acceptance assertions remain unchanged and are not
 retried. A focused PTY run and the final full aggregate passed. This fixes a test
 synchronization gap, not a claimed production bug or latency guarantee.
+
+## Native Bash and self-contained installation milestone (2026-10-23)
+
+The final local aggregate passed on Linux Bash 5.2.37 / Python 3.12.14:
+27 Python unit tests; 131 Rust tests in each debug/release profile (one existing
+ignored test per profile); formatting, Clippy, both builds, headless examples,
+and all previous AI/native/risk/mobile PTYs. New real-Bash PTYs pass against both
+builds and a separately installed binary. No provider API or hosted CI ran.
+
+The clean-HOME installation gate performs offline `cargo install --path . --root
+TEMP --debug --locked --offline`, runs the installed binary's doctor, extracts
+bundled assets to a path containing spaces, sources those extracted assets in a
+profile-free real Bash, exercises the full PTY suite including disable, and
+uninstalls the unchanged assets. It asserts no profile or history file was
+created. The runtime adapter does not depend on keeping the checkout.
+
+Coverage includes native Tab/history/editing, asynchronous request and separate
+preview/accept, risk acknowledgment, Unicode cursor conversion and preserved
+suffix, blank zero-call behavior, malformed/oversize/control/fenced responses,
+stale buffer/cursor/cwd/new-prompt rejection, Ctrl-C and terminal/SIGHUP cleanup,
+no model-text execution, original key/prompt restoration, preservation of later
+key changes, exported prompt arrays and idempotent disable. Installation tests
+also cover overwrite refusal, changed/extra-file preservation and symlink refusal.
+
+Independent review caught and resolved request-identity mismatch, character-vs-
+byte cursor semantics, cross-prompt stale acknowledgment, terminal-exit orphan
+cleanup, and disable restoration edge cases. One initial expanded aggregate hit
+a test timing race while a synthetic backend was still pending; the stale-result
+test now uses a deterministic release barrier and bounded readiness instead of a
+fixed inference sleep. The final complete aggregate passed without retrying a
+failed assertion. This is regression evidence, not a security certification.
+
+Minimum Bash is 5.1 because native PROMPT_COMMAND arrays preserve prompt code.
+Full Vi editing, macOS/Git Bash/Windows terminals, real HTTP-provider latency and
+SSH remain unverified. Other adapters have separate experimental validation
+records and are not implied validated by this Bash milestone.

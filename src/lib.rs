@@ -1,7 +1,8 @@
 //! Native-first Reedline completion plus explicit, local structured workflow previews.
 //!
 //! Network use and history sharing are separate opt-ins. No shell commands
-//! are executed and no shell history, cwd, or filesystem context is imported.
+//! are executed and no shell history or filesystem context is imported. Native
+//! adapters supply cwd only as local validated metadata, never provider context.
 
 pub mod backend;
 pub mod context;
@@ -21,3 +22,7 @@ pub mod review_menu;
 pub mod risk;
 
 pub mod mobile;
+
+pub mod adapter;
+
+pub mod adapter_install;

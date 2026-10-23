@@ -1,4 +1,4 @@
-//! Standalone, offline CLI surface. This is not a host-shell adapter.
+//! Offline CLI surface for local previews, memory, and explicit adapter distribution.
 use crate::{
     backend::{Backend, MockBackend},
     context::Context,
@@ -104,6 +104,8 @@ impl ConfigArgs {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Install, check or remove explicitly selected native-shell adapter assets.
+    Adapter(crate::adapter_install::AdapterArgs),
     /// Offline structured-edit preview. No process execution or HTTP calls.
     Suggest(SuggestArgs),
     /// Inspect or explicitly edit local confirmed memory (JSON only).
@@ -165,6 +167,7 @@ pub enum MemoryCommand {
 
 pub fn run(command: Commands) -> Result<(), Error> {
     match command {
+        Commands::Adapter(args) => crate::adapter_install::run(args)?,
         Commands::Suggest(args) => {
             let shell = args
                 .shell

@@ -80,6 +80,9 @@ struct Args {
     debounce_ms: u64,
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=60))]
     timeout_seconds: u64,
+    /// Native shell bridge: read a versioned JSON request from stdin, emit JSON only.
+    #[arg(long, conflicts_with_all = ["complete", "history_preview", "history_file", "ai_history", "shell", "config", "global_config", "project_config", "project_root", "local_config", "history_exclude"])]
+    adapter_request: bool,
     /// One-shot completion as JSON, without opening an interactive terminal.
     #[arg(long)]
     complete: Option<String>,
@@ -130,11 +133,12 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if ![8192, 16384].contains(&args.request_budget) {
         return Err("--request-budget must be 8192 or 16384 (conservative estimate units, not actual tokens)".into());
     }
-    let mut history = if args.complete.is_some() || args.history_preview.is_some() {
-        LocalHistory::read_only(args.history_file.clone())?
-    } else {
-        LocalHistory::new(args.history_file.clone())?
-    };
+    let mut history =
+        if args.adapter_request || args.complete.is_some() || args.history_preview.is_some() {
+            LocalHistory::read_only(args.history_file.clone())?
+        } else {
+            LocalHistory::new(args.history_file.clone())?
+        };
     let history_config = HistoryContextConfig {
         enabled: args.ai_history,
         budget: RequestBudget::new(args.request_budget as usize, 4096)?,
@@ -205,6 +209,12 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(http)
         }
     };
+    if args.adapter_request {
+        let request = reedline_ai::adapter::read_request(io::stdin().lock())?;
+        let response = reedline_ai::adapter::complete(request, backend.as_ref())?;
+        println!("{}", serde_json::to_string(&response)?);
+        return Ok(());
+    }
     if let Some(buffer) = &args.complete {
         let cursor = args.cursor.unwrap_or(buffer.len());
         let context = context_for(buffer, cursor)?;

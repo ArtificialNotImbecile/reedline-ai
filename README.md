@@ -2,9 +2,15 @@
 
 一个基于 [Reedline](https://github.com/nushell/reedline) 的 Rust AI 命令行补全实验：保留原生历史/编辑/菜单，优先本地即时补全，再用异步 AI 做 fallback；支持保留光标后文本的 fill-in-the-middle（FIM）插入。
 
-A small Rust playground for asynchronous suffix and cursor-aware infill completion. **Not a shell, shell plugin, or command-execution agent.**
+A small Rust playground for asynchronous suffix and cursor-aware infill completion. **Not a replacement shell or command-execution agent.** The standalone prototype and opt-in native-shell adapters are separate entry points.
 
 > 当前是可运行的 MVP，不是 shell 替代品。按 Enter 只显示接受的文本，不会执行命令。默认使用确定性的离线 mock，不联网，也不需要 API key。
+
+## Native shell integration (opt-in)
+
+The standalone demo is not your shell. The native adapters instead keep the existing shell editor, history and completion, and call the shared Rust backend only through explicit keys. They insert accepted text into the current line and never press Enter or execute it. The host shell still executes normally if you subsequently press Enter.
+
+Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. Shell-specific platform validation limits are recorded in each guide.
 
 ## Shell-aware workflows and editable local memory
 
@@ -18,7 +24,7 @@ cargo run --locked -- --shell bash --config examples/project-memory.synthetic.js
 
 All fixture paths are synthetic. JSON project memory is user-editable, with explicit global/project/local/CLI-file layers, strict local-only settings and management commands. Nothing is auto-discovered or learned from real histories. Empty/whitespace input sends no AI request; the 180 ms debounce is unchanged. HTTP completions can include explicitly supplied shell metadata, but still return insertion-only text; deterministic local replacements are separate.
 
-See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md), [local command-risk review](docs/risk-review.md), and the [truthful implementation roadmap](docs/ROADMAP.md). Explicit [mobile text interaction](docs/mobile-mode.md) is available with `--mode mobile`; shell adapters remain a subsequent stage.
+See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md), [local command-risk review](docs/risk-review.md), and the [truthful implementation roadmap](docs/ROADMAP.md). Explicit [mobile text interaction](docs/mobile-mode.md) is available with `--mode mobile`; native-shell adapter work is documented below.
 
 ### Local advisory command-risk review
 
