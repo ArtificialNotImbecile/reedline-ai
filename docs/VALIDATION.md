@@ -57,3 +57,7 @@ Known limitations remain intentional: no command execution, no native shell inte
 Independent review found two bugs in the first draft: raw pasted controls could reach default ANSI rendering before validation, and Reedline input batching could accept stale or repeated hints. The iteration introduced pre-render input filtering and input-ordered, one-shot rendered-hint acceptance, with dedicated Rust and PTY regression coverage. This record describes checks, not a formal security certification.
 
 Dependency advisory check: `cargo-audit` 0.22.2 checked the lockfile on 2026-10-23 against 1,349 loaded RustSec advisories. It reported zero known vulnerabilities and no warnings. This is a dated advisory lookup, not a guarantee that dependencies contain no vulnerabilities; rerun against the current database before a release.
+
+## Mobile milestone
+
+`bash scripts/ci-local.sh` now includes `scripts/pty_mobile.py` against debug and release builds, using 20-column Linux POSIX PTYs, synthetic project memory, all three risk policies, Unicode previews, cancellation/edit invalidation, empty input, ordinary-text quit and EOF. The script verifies that accepting a synthetic `touch` candidate does not create its target file. Unit tests cover bounded sanitized Unicode wrapping, line-reader errors/draining, backend errors, stale results, exact typed workflow steps, local-history priority and no blank AI calls. Desktop smoke suites remain in the aggregate gate. These checks do not validate actual phone apps, SSH/Tailscale, Windows terminals or non-Bash execution.

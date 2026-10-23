@@ -955,11 +955,13 @@ name = "reedline-ai"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crossterm",
  "nu-ansi-term",
  "reedline",
  "reqwest",
  "serde",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

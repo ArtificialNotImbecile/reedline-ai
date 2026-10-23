@@ -32,16 +32,25 @@ enum ProviderKind {
     Deepseek,
 }
 
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum InteractionMode {
+    Desktop,
+    Mobile,
+}
+
 #[derive(Parser)]
 #[command(
     version,
     args_conflicts_with_subcommands = true,
     about = "AI suffix/FIM completion playground. Never executes commands.",
-    after_help = "Default: offline deterministic mock. HTTP mode automatically sends the current line's prefix and suffix to the explicitly selected endpoint after a pause. Do not type secrets. History stays local unless --ai-history is explicitly enabled. No cwd or files are sent."
+    after_help = "Default: offline deterministic mock. Desktop HTTP mode sends the current line's prefix and suffix after a pause; mobile sends only on a submitted candidate request, to the explicitly selected endpoint. Do not type secrets. History stays local unless --ai-history is explicitly enabled. No cwd or files are sent."
 )]
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
+    /// Explicit interaction style; never inferred from SSH or phone OS.
+    #[arg(long, value_enum, default_value = "desktop")]
+    mode: InteractionMode,
     #[command(flatten)]
     risk: RiskArgs,
     #[command(flatten)]
@@ -213,6 +222,23 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("interactive mode needs a terminal; use --complete for headless mode".into());
+    }
+    if args.mode == InteractionMode::Mobile {
+        return reedline_ai::mobile::run(
+            Engine::new(
+                backend,
+                EngineConfig {
+                    debounce: Duration::from_millis(args.debounce_ms),
+                    ..EngineConfig::default()
+                },
+            ),
+            history,
+            history_config,
+            shell,
+            project_memory,
+            args.risk.risk_policy,
+            args.backend == BackendKind::Http,
+        );
     }
     let network = args.backend == BackendKind::Http;
     if network {

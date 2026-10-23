@@ -13,6 +13,8 @@ pub struct LocalSuggestion {
     pub source: &'static str,
     pub explanation: &'static str,
     pub warnings: Vec<&'static str>,
+    /// Original typed steps, not guessed by splitting shell source.
+    pub steps: Vec<String>,
 }
 
 pub fn suggest_local(
@@ -91,6 +93,7 @@ pub fn suggest_local(
                     source: "confirmed_workflow",
                     explanation: "Exact match from explicitly selected local configuration; review before accepting.",
                     warnings,
+                    steps,
                 });
             }
         }
@@ -144,6 +147,7 @@ fn translate_intent(
         source: "shell_intent",
         explanation: "Canonical target-shell equivalent; explicitly supplied commands and aliases take precedence.",
         warnings: Vec::new(),
+        steps: vec![replacement.into()],
     }))
 }
 

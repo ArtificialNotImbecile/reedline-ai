@@ -16,10 +16,13 @@ The immediate product is a standalone, native-first Reedline prototype that save
 
 See [project memory](project-memory.md) and [risk review](risk-review.md) for exact syntax, rejects and verification limits. Tests of rendered strings are not proof of native-shell compatibility; only harmless Bash parser/literal checks run in this cloud Linux stage.
 
+## Explicit mobile mode (implemented)
+
+`--mode desktop|mobile` selects interaction explicitly. Desktop retains Reedline. Mobile provides bounded, narrow-screen numbered candidates, actual typed workflow steps, ordinary text accept/cancel and an extra text confirmation under risk policy `confirm`. Existing local-first completion and async backend are reused. No execution or SSH inference occurs. See [mobile-mode.md](mobile-mode.md) for canonical-terminal limits and exact coverage.
+
 ## Next, in agreed order (not implemented)
 
-1. Explicit desktop/mobile interaction modes for a remotely installed tool used over a mobile terminal/SSH. Desktop retains Reedline; mobile uses a narrow-screen numbered shortlist and simple accept/cancel without assuming Ctrl/Alt. Submitting natural text produces a preview, never execution. Target shell is the remote shell, not the phone OS. No SSH/Tailscale/server configuration or access is implied.
-2. Per-shell native adapters around the shared Rust backend, opt-in and independently tested. Preserve each host's keybindings, history, cursor units and acceptance guard; do not replace all shells with a custom editor.
+1. Per-shell native adapters around the shared Rust backend, opt-in and independently tested. Preserve each host's keybindings, history, cursor units and acceptance guard; do not replace all shells with a custom editor.
 
 ## Adapter research, not shipped
 

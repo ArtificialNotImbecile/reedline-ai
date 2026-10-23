@@ -8,6 +8,8 @@ license = "MIT"
 repository = "https://github.com/ArtificialNotImbecile/reedline-ai"
 
 [dependencies]
+crossterm = "0.29"
+unicode-width = "0.2"
 clap = { version = "4.5", features = ["derive", "env"] }
 nu-ansi-term = "0.50"
 reedline = "=0.52.1"

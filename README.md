@@ -18,7 +18,7 @@ cargo run --locked -- --shell bash --config examples/project-memory.synthetic.js
 
 All fixture paths are synthetic. JSON project memory is user-editable, with explicit global/project/local/CLI-file layers, strict local-only settings and management commands. Nothing is auto-discovered or learned from real histories. Empty/whitespace input sends no AI request; the 180 ms debounce is unchanged. HTTP completions can include explicitly supplied shell metadata, but still return insertion-only text; deterministic local replacements are separate.
 
-See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md), [local command-risk review](docs/risk-review.md), and the [truthful implementation roadmap](docs/ROADMAP.md). Shell adapters and a mobile interaction mode remain subsequent stages, not delivered capabilities.
+See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md), [local command-risk review](docs/risk-review.md), and the [truthful implementation roadmap](docs/ROADMAP.md). Explicit [mobile text interaction](docs/mobile-mode.md) is available with `--mode mobile`; shell adapters remain a subsequent stage.
 
 ### Local advisory command-risk review
 
@@ -31,6 +31,10 @@ cargo run --locked -- suggest --shell bash --risk-policy confirm --buffer 'git s
 ```
 
 `off` hides UI warnings and removes the extra gate, but JSON still includes `risk_policy`, `risk_review` (`warnings`, `incomplete`), and `additional_acceptance_required`. Only the explicit CLI option controls policy: no environment variable, project-memory layer, or global policy file can change it. Missing shell context is explicitly incomplete. This is lexical advisory review, not a complete parser, execution permission system, or safety guarantee. See [coverage, limits, and protocol semantics](docs/risk-review.md).
+
+## Mobile terminal mode
+
+Use `reedline-ai --mode mobile --shell bash` on the server you already access through SSH. Type text + Enter, choose a numbered preview, then `accept` (and `confirm` if the risk policy requires it), or `cancel`. `edit TEXT`, `suggest`, `help` and `quit` need no Ctrl/Alt/function keys. `--mode desktop` remains the default. Both modes only accept text, never execute it. Mobile uses the selected server shell, never detects a phone from SSH, and does not set up SSH/Tailscale. See [mobile commands, limits and validation](docs/mobile-mode.md).
 
 ## 快速开始
 
