@@ -4,7 +4,7 @@ use reedline::{
     default_emacs_keybindings,
 };
 use reedline_ai::{
-    backend::{Backend, HttpBackend, MockBackend},
+    backend::{Backend, HttpBackend, HttpNetworkOptions, HttpProvider, MockBackend},
     context::{Context, safe_display},
     editor::{AiCompleter, AiHinter, AiPrompt, SafeEmacs},
     engine::{Engine, EngineConfig, Outcome},
@@ -21,6 +21,12 @@ enum BackendKind {
     Http,
 }
 
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum ProviderKind {
+    Generic,
+    Deepseek,
+}
+
 #[derive(Parser)]
 #[command(
     version,
@@ -35,6 +41,15 @@ struct Args {
     endpoint: Option<String>,
     #[arg(long, required_if_eq("backend", "http"))]
     model: Option<String>,
+    /// Explicit provider extension. Deepseek disables reasoning; generic adds no extra fields.
+    #[arg(long, value_enum, default_value = "generic")]
+    provider: ProviderKind,
+    /// Explicitly allow HTTP(S)/ALL_PROXY and NO_PROXY environment configuration.
+    #[arg(long)]
+    allow_env_proxy: bool,
+    /// Explicitly trust platform certificates (including SSL_CERT_FILE/SSL_CERT_DIR).
+    #[arg(long)]
+    trust_native_certs: bool,
     /// Read a bearer key from this environment variable; never pass the key as an argument.
     #[arg(long, default_value = "REEDLINE_AI_API_KEY")]
     api_key_env: String,
@@ -45,6 +60,9 @@ struct Args {
     /// One-shot completion as JSON, without opening an interactive terminal.
     #[arg(long)]
     complete: Option<String>,
+    /// Include numeric provider token usage in one-shot HTTP JSON output.
+    #[arg(long, requires = "complete")]
+    report_usage: bool,
     /// UTF-8 byte offset for --complete (default: end of input).
     #[arg(long, requires = "complete")]
     cursor: Option<usize>,
@@ -65,19 +83,51 @@ fn main() -> std::process::ExitCode {
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let backend: Arc<dyn Backend> = match args.backend {
         BackendKind::Mock => {
-            if args.endpoint.is_some() || args.model.is_some() {
-                return Err("--endpoint and --model require --backend http".into());
+            if args.endpoint.is_some()
+                || args.model.is_some()
+                || args.provider != ProviderKind::Generic
+                || args.report_usage
+                || args.allow_env_proxy
+                || args.trust_native_certs
+            {
+                return Err("HTTP configuration options require --backend http".into());
             }
             Arc::new(MockBackend)
         }
         BackendKind::Http => {
             let key = std::env::var(&args.api_key_env).ok();
-            Arc::new(HttpBackend::new(
+            let http = HttpBackend::new_with_network(
                 args.endpoint.as_deref().expect("clap endpoint"),
                 args.model.as_deref().expect("clap model"),
                 key.as_deref(),
                 Duration::from_secs(args.timeout_seconds),
-            )?)
+                HttpNetworkOptions {
+                    allow_env_proxy: args.allow_env_proxy,
+                    trust_native_certs: args.trust_native_certs,
+                },
+            )?
+            .with_provider(match args.provider {
+                ProviderKind::Generic => HttpProvider::Generic,
+                ProviderKind::Deepseek => HttpProvider::DeepSeek,
+            });
+            if args.report_usage {
+                let buffer = args.complete.as_deref().expect("clap complete");
+                let cursor = args.cursor.unwrap_or(buffer.len());
+                let context = Context::new(buffer, cursor)?;
+                let (insertion, usage) = if context.is_empty() {
+                    (String::new(), None)
+                } else {
+                    let completion = http.complete_with_usage(&context)?;
+                    (completion.insertion, completion.usage)
+                };
+                let result = context.insert(&insertion)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"insertion": insertion, "result": result, "cursor": cursor, "usage": usage})
+                );
+                return Ok(());
+            }
+            Arc::new(http)
         }
     };
     if let Some(buffer) = &args.complete {

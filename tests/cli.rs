@@ -55,3 +55,32 @@ fn missing_terminal_fails_with_headless_hint() {
             .contains("--complete")
     );
 }
+
+#[test]
+fn provider_extensions_and_usage_require_explicit_http_mode() {
+    for args in [
+        vec!["--provider", "deepseek", "--complete", "git st"],
+        vec!["--report-usage", "--complete", "git st"],
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    let output = run(&[
+        "--backend",
+        "http",
+        "--provider",
+        "deepseek",
+        "--report-usage",
+        "--endpoint",
+        "http://127.0.0.1:1/chat/completions",
+        "--model",
+        "deepseek-flash",
+        "--complete",
+        "",
+    ]);
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["insertion"], "");
+    assert!(result["usage"].is_null());
+}

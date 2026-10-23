@@ -10,6 +10,8 @@ for tool in cargo python3; do
   fi
 done
 
+python3 -m unittest discover -s scripts -p 'test_*.py'
+
 case "$(uname -s)" in
   Linux|Darwin) ;;
   *)

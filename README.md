@@ -55,7 +55,34 @@ cargo run --locked -- --backend http \
 
 远端必须使用 HTTPS。需要密钥时，通过环境变量 `REEDLINE_AI_API_KEY` 注入；也可用 `--api-key-env NAME` 指定另一个变量名。不要把密钥放进命令行参数、URL、源码或 issue。未设置密钥时不发送 Authorization，适用于无认证的本地服务。
 
-该适配器把 `prefix` / `suffix` 作为独立 JSON 字段放进 user message，要求模型只返回中间插入文本。**这是 prompted infill，不等于模型原生 FIM token 支持**；不依赖供应商是否支持 `/completions` 的 `suffix` 参数。模型质量和协议兼容性取决于所选服务，未进行真实付费 API 验证。此 MVP 不启动模型服务器。
+默认忽略环境代理，只信任内置公共根证书。若你的云环境/企业网络要求代理，可明确添加 `--allow-env-proxy`，按需读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`（含小写形式）。若需要平台/企业 CA，再独立添加 `--trust-native-certs`，使用系统证书及 `SSL_CERT_FILE` / `SSL_CERT_DIR`；TLS 证书验证始终开启。代理 URL 和证书路径不会出现在错误报告里。只启用你信任的网络配置：代理可看到目标地址，受信任的 TLS 检查代理还可能看到正文和 Authorization。
+
+该适配器把 `prefix` / `suffix` 作为独立 JSON 字段放进 user message，要求模型只返回中间插入文本。**这是 prompted infill，不等于模型原生 FIM token 支持**；不依赖供应商是否支持 `/completions` 的 `suffix` 参数。2026-10-23 对 DeepSeek 官方 `deepseek-flash` 做过 3 个合成样例的有限真实 API 验证，见 [验证记录](docs/VALIDATION.md)。这不代表其他模型/供应商或任意命令都已验证。此 MVP 不启动模型服务器。
+
+### DeepSeek（显式 opt-in）
+
+按 [DeepSeek 官方接口](https://api-docs.deepseek.com/api/create-chat-completion/) 配置：
+
+```sh
+cargo run --locked -- --backend http --provider deepseek \
+  --endpoint https://api.deepseek.com/chat/completions \
+  --model deepseek-flash
+```
+
+`--provider deepseek` 才会添加 `thinking: {"type":"disabled"}`，避免短补全消耗推理输出；默认 `generic` 不添加供应商专属字段，也不会仅凭模型名自动推断。网络模式仍须明确指定 endpoint/model，密钥仅从进程环境读取。`--report-usage` 可与 HTTP `--complete` 一起使用，在 JSON 中额外输出允许字段内的数字 token 用量，不输出原始响应。
+
+如需一次性真实服务验收，先确认官方 [当前价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 和费用授权，再将密钥安全注入本次进程的 `REEDLINE_AI_API_KEY`。不要把密钥写到仓库、命令行参数、终端历史或测试报告。
+
+```sh
+cargo build --locked --release
+python3 scripts/deepseek_smoke.py --allow-billable-api --max-cost-cny YOUR_APPROVED_CAP
+```
+
+上述网络选项也可显式传给这个脚本：`--allow-env-proxy --trust-native-certs`。两项默认关闭，不会为了连通性自动降低 TLS 安全性。
+
+这条命令会计费，**不属于本地 CI，也不会自动运行**。脚本固定官方 endpoint / `deepseek-flash`，只发 3 个合成 suffix/FIM/Unicode 样例；每个最多 128 输出 tokens、15 秒网络超时，没有重试。遇到失败立即停止，不显示响应正文。报告只包含转义后的样例补全文本、后缀保留检查、示例匹配情况、延迟、允许字段内的数字用量和费用上界估算，不执行任何生成文本。
+
+费用估算使用 2026-10-23 官方峰值价格：未缓存输入 ¥2/百万 tokens、输出 ¥8/百万 tokens；不计入缓存/非高峰优惠。发送前为每次请求按整个 1,048,576-token 上下文加 128 输出预留 ¥2.098176，三次总预留 ¥6.294528，须小于参数指定的已授权上限。把 `YOUR_APPROVED_CAP` 替换成你为本次运行明确批准的人民币数字上限。这是基于所注明价格/模型限制的保守估算，不是供应商账单锁定；价格变化后须先更新脚本。每次调用脚本是一次新的付费运行，绝不能用循环自动重试。
 
 ```sh
 cargo run --locked -- --help
@@ -65,9 +92,9 @@ cargo run --locked -- --help
 ## 隐私与安全边界
 
 - 默认 mock 不发出网络请求。HTTP 模式会在你停止编辑约 180 ms 后自动发送**当前行的 prefix/suffix**，包括行内可能存在的敏感内容；请勿输入秘密。请求还包含固定系统提示、模型名及生成参数。
-- 不收集或上传历史、工作目录、文件、剪贴板或环境变量；唯一主动读取的环境值是你指定的 API key。Reedline 提供给 hinter 的 history/cwd 参数被忽略。
+- 不将历史、工作目录、文件、剪贴板或环境变量加入模型上下文。默认仅主动读取指定 API key；显式网络选项还会读取代理/CA 配置用于传输和本地信任验证，不作为 prompt。Reedline 提供给 hinter 的 history/cwd 参数被忽略。
 - 不记录请求正文、API key 或原始错误响应。失败信息经过脱敏。模型 API key 只用于该 endpoint 的 Authorization header，不保存到磁盘；这不是内存清零或防止本机管理员读取进程的保证。
-- 禁止 HTTP 重定向，禁止带凭据/query/fragment 的 URL。远端只允许 HTTPS，明文 HTTP 仅允许 loopback。禁用隐式代理配置。
+- 禁止 HTTP 重定向和请求重试，禁止带凭据/query/fragment 的 endpoint URL。远端只允许 HTTPS，明文 HTTP 仅允许 loopback。代理和平台 CA 必须分别显式 opt-in。
 - 每次最多 8 KiB 输入，1 KiB 插入文本，64 KiB 响应体；模型请求最多 128 tokens。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
 - 一个后台 worker：最多 1 个进行中的请求 + 1 个可替换等待项。没有自动重试。超时默认 8 秒；这不是总费用预算，持续使用远端服务仍可能计费。
 - 缓存只在内存中，默认最多 32 项、60 秒有效；提交/取消时清空。过期结果不能覆盖新输入，也不会重新填入已清空的缓存。按输入顺序消费的一次性已显示候选，防止同批按键重复/过期接受灰字，同时保留“接受后继续输入”的顺序。已发出的请求无法收回；退出可能等待当前 HTTP 超时结束。

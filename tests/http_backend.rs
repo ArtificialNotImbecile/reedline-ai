@@ -1,6 +1,6 @@
 //! Deterministic localhost-only protocol tests. No credentials or paid APIs.
 use reedline_ai::{
-    backend::{Backend, BackendError, HttpBackend},
+    backend::{Backend, BackendError, HttpBackend, HttpProvider},
     context::Context,
 };
 use serde_json::{Value, json};
@@ -110,8 +110,117 @@ fn request_contains_fim_context_and_only_explicit_auth() {
     assert_eq!(context, json!({"prefix":"git ","suffix":" --short"}));
     assert_eq!(body["stream"], false);
     assert_eq!(body["max_tokens"], 128);
+    assert!(body.get("thinking").is_none());
     assert!(!body.to_string().contains("TEST_ONLY_NOT_A_REAL_KEY"));
     handle.join().unwrap();
+}
+
+#[test]
+fn deepseek_opt_in_disables_thinking_on_the_wire() {
+    let (endpoint, request, handle) = server("200 OK", response("atus"), "", Duration::ZERO);
+    let backend = HttpBackend::new(&endpoint, "deepseek-flash", None, Duration::from_secs(1))
+        .unwrap()
+        .with_provider(HttpProvider::DeepSeek);
+    assert_eq!(
+        backend
+            .complete(&Context::new("git st", 6).unwrap())
+            .unwrap(),
+        "atus"
+    );
+    let request = request.recv().unwrap();
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    let body: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(body["thinking"], json!({"type":"disabled"}));
+    assert_eq!(body["max_tokens"], 128);
+    assert_eq!(body["stream"], false);
+    assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    handle.join().unwrap();
+}
+
+#[test]
+fn explicit_usage_reports_numeric_fields_only() {
+    let body = json!({
+        "choices": [{"message": {"content": "atus"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105,
+                  "prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10,
+                  "provider_private_message": "DO_NOT_REPORT"},
+        "provider_private_message": "DO_NOT_REPORT"
+    })
+    .to_string();
+    let (endpoint, _request, handle) = server("200 OK", body, "", Duration::ZERO);
+    let backend = HttpBackend::new(&endpoint, "test", None, Duration::from_secs(1)).unwrap();
+    let completion = backend
+        .complete_with_usage(&Context::new("git st", 6).unwrap())
+        .unwrap();
+    assert_eq!(completion.insertion, "atus");
+    let usage = serde_json::to_value(completion.usage.unwrap()).unwrap();
+    assert_eq!(usage["prompt_tokens"], 100);
+    assert_eq!(usage["completion_tokens"], 5);
+    assert_eq!(usage["total_tokens"], 105);
+    assert_eq!(usage["prompt_cache_hit_tokens"], 90);
+    assert!(!usage.to_string().contains("DO_NOT_REPORT"));
+    handle.join().unwrap();
+}
+
+#[test]
+fn environment_proxy_is_used_only_after_explicit_opt_in() {
+    for allow_proxy in [false, true] {
+        let (endpoint, request, handle) = server("200 OK", response("atus"), "", Duration::ZERO);
+        let proxy = if allow_proxy {
+            endpoint.trim_end_matches("/v1/chat/completions")
+        } else {
+            "http://127.0.0.1:1"
+        };
+        let target = if allow_proxy {
+            "http://127.0.0.2:9/v1/chat/completions"
+        } else {
+            &endpoint
+        };
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_reedline-ai"));
+        command.args([
+            "--backend",
+            "http",
+            "--endpoint",
+            target,
+            "--model",
+            "test",
+            "--timeout-seconds",
+            "2",
+            "--complete",
+            "git st",
+        ]);
+        command.env_remove("REEDLINE_AI_API_KEY");
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            command.env_remove(name);
+        }
+        command
+            .env("HTTP_PROXY", proxy)
+            .env("http_proxy", proxy)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "");
+        if allow_proxy {
+            command.arg("--allow-env-proxy");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "local proxy fixture failed");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["insertion"], "atus");
+        let request = request.recv_timeout(Duration::from_secs(2)).unwrap();
+        if allow_proxy {
+            assert!(request.starts_with("POST http://127.0.0.2:9/v1/chat/completions HTTP/1.1"));
+        } else {
+            assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        }
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        handle.join().unwrap();
+    }
 }
 
 #[test]

@@ -67,10 +67,42 @@ impl Backend for MockBackend {
 
 /// OpenAI-compatible /chat/completions adapter, using prompted infill.
 /// This does not claim native FIM-token support or a /completions suffix field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HttpProvider {
+    #[default]
+    Generic,
+    /// Explicit opt-in: disable DeepSeek's default reasoning for short insertions.
+    DeepSeek,
+}
+
+/// Numeric-only provider metadata. No raw response or provider messages are exposed.
+#[derive(Debug, serde::Serialize)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hit_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_miss_tokens: Option<u64>,
+}
+
+pub struct HttpCompletion {
+    pub insertion: String,
+    pub usage: Option<TokenUsage>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct HttpNetworkOptions {
+    pub allow_env_proxy: bool,
+    pub trust_native_certs: bool,
+}
+
 pub struct HttpBackend {
     client: Client,
     endpoint: Url,
     model: String,
+    provider: HttpProvider,
 }
 
 impl HttpBackend {
@@ -79,6 +111,22 @@ impl HttpBackend {
         model: &str,
         api_key: Option<&str>,
         timeout: Duration,
+    ) -> Result<Self, BackendError> {
+        Self::new_with_network(
+            endpoint,
+            model,
+            api_key,
+            timeout,
+            HttpNetworkOptions::default(),
+        )
+    }
+
+    pub fn new_with_network(
+        endpoint: &str,
+        model: &str,
+        api_key: Option<&str>,
+        timeout: Duration,
+        network: HttpNetworkOptions,
     ) -> Result<Self, BackendError> {
         let endpoint = validate_endpoint(endpoint)?;
         if model.is_empty() || model.len() > 128 || model.chars().any(crate::context::unsafe_char) {
@@ -98,20 +146,31 @@ impl HttpBackend {
             value.set_sensitive(true);
             headers.insert(AUTHORIZATION, value);
         }
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .default_headers(headers)
-            .no_proxy()
+            .tls_built_in_native_certs(network.trust_native_certs)
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(timeout.min(Duration::from_secs(3)))
+            .retry(reqwest::retry::never())
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
             .timeout(timeout)
-            .user_agent(concat!("reedline-ai/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("reedline-ai/", env!("CARGO_PKG_VERSION")));
+        if !network.allow_env_proxy {
+            builder = builder.no_proxy();
+        }
+        let client = builder
             .build()
             .map_err(|_| BackendError::Config("could not initialize the HTTP client"))?;
         Ok(Self {
             client,
             endpoint,
             model: model.into(),
+            provider: HttpProvider::Generic,
         })
+    }
+
+    pub fn with_provider(mut self, provider: HttpProvider) -> Self {
+        self.provider = provider;
+        self
     }
 }
 
@@ -157,12 +216,21 @@ pub fn request_body(model: &str, context: &Context) -> Value {
     })
 }
 
-impl Backend for HttpBackend {
-    fn complete(&self, context: &Context) -> Result<String, BackendError> {
+fn provider_request_body(model: &str, context: &Context, provider: HttpProvider) -> Value {
+    let mut body = request_body(model, context);
+    if provider == HttpProvider::DeepSeek {
+        body["thinking"] = json!({"type": "disabled"});
+    }
+    body
+}
+
+impl HttpBackend {
+    /// One bounded request, with optional numeric usage for explicit headless evaluation.
+    pub fn complete_with_usage(&self, context: &Context) -> Result<HttpCompletion, BackendError> {
         let response = self
             .client
             .post(self.endpoint.clone())
-            .json(&request_body(&self.model, context))
+            .json(&provider_request_body(&self.model, context, self.provider))
             .send()
             .map_err(|_| BackendError::Transport)?;
         if !response.status().is_success() {
@@ -195,7 +263,30 @@ impl Backend for HttpBackend {
             .and_then(Value::as_str)
             .ok_or(BackendError::InvalidResponse)?;
         validate_insertion(text).map_err(BackendError::UnsafeOutput)?;
-        Ok(text.to_string())
+        let usage = body.get("usage").and_then(|usage| {
+            Some(TokenUsage {
+                prompt_tokens: usage.get("prompt_tokens")?.as_u64()?,
+                completion_tokens: usage.get("completion_tokens")?.as_u64()?,
+                total_tokens: usage.get("total_tokens")?.as_u64()?,
+                prompt_cache_hit_tokens: usage
+                    .get("prompt_cache_hit_tokens")
+                    .and_then(Value::as_u64),
+                prompt_cache_miss_tokens: usage
+                    .get("prompt_cache_miss_tokens")
+                    .and_then(Value::as_u64),
+            })
+        });
+        Ok(HttpCompletion {
+            insertion: text.to_string(),
+            usage,
+        })
+    }
+}
+
+impl Backend for HttpBackend {
+    fn complete(&self, context: &Context) -> Result<String, BackendError> {
+        self.complete_with_usage(context)
+            .map(|result| result.insertion)
     }
 }
 
@@ -235,6 +326,19 @@ mod tests {
             assert!(body.get(forbidden).is_none());
             assert!(data.get(forbidden).is_none());
         }
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn deepseek_fields_are_explicit_opt_in_not_inferred_from_model() {
+        let context = Context::new("git st", 6).unwrap();
+        let generic = provider_request_body("deepseek-flash", &context, HttpProvider::Generic);
+        assert!(generic.get("thinking").is_none());
+        let mut deepseek =
+            provider_request_body("deepseek-flash", &context, HttpProvider::DeepSeek);
+        assert_eq!(deepseek["thinking"], json!({"type":"disabled"}));
+        deepseek.as_object_mut().unwrap().remove("thinking");
+        assert_eq!(deepseek, generic);
     }
 
     #[test]
