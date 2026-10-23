@@ -10,7 +10,7 @@ A small Rust playground for asynchronous suffix and cursor-aware infill completi
 
 The standalone demo is not your shell. The native adapters instead keep the existing shell editor, history and completion, and call the shared Rust backend only through explicit keys. They insert accepted text into the current line and never press Enter or execute it. The host shell still executes normally if you subsequently press Enter.
 
-Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. Shell-specific platform validation limits are recorded in each guide.
+Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. PowerShell, Nushell and CMD+Clink packages require explicit `--experimental` extraction. See [PowerShell](docs/powershell-adapter.md), [Nushell](docs/nushell-adapter.md), and [CMD+Clink](docs/cmd-adapter.md) for actual runtime coverage and limits; Windows/Clink is not claimed tested.
 
 ## Shell-aware workflows and editable local memory
 

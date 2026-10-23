@@ -24,7 +24,7 @@ See [project memory](project-memory.md) and [risk review](risk-review.md) for ex
 
 Opt-in adapters now share a bounded Rust stdin JSON bridge with explicit shell/cwd/buffer/cursor identity. The [Bash guide](bash-adapter.md) records the real bind-x request/preview/accept UX and isolated PTY coverage. This is not an inline predictor and does not replace native editing, completion or history. Model suggestions remain insertion-only; local structured workflow/memory integration is still future work for the adapters.
 
-PowerShell, Nushell and CMD+Clink have separate platform validation requirements; do not interpret Rust protocol tests or Linux Bash PTYs as proof of their behavior. Real SSH work is deferred until the user provides an authorized environment.
+PowerShell and Nushell now have explicit-request experimental adapters with separate Linux native/installed-runtime tests. CMD+Clink has an experimental optional-dependency adapter, portable transport tests and Lua mocks only; Windows native execution remains unverified. All are bundled for explicit `--experimental` extraction, not automatic enabling. Do not interpret protocol or Bash tests as proof of other platforms. Real SSH work is deferred until the user provides an authorized environment.
 
 ## Platform API references and future predictor research
 
@@ -39,4 +39,4 @@ The isolated [SSH feasibility experiment](ssh-adapter-feasibility.md) validates 
 
 ## Distribution
 
-Local `cargo install --path . --locked` installs a binary with bundled Bash adapter assets. `reedline-ai adapter install --shell bash --directory NEW_DIRECTORY` extracts them explicitly; it never edits profiles or enables itself. See [installation and removal](install.md). `cargo install --git ... --rev VERIFIED_COMMIT --locked` requires that revision to be published. No crates.io publication, apt repository/.deb, automatic shell setup, or name/trademark clearance is claimed. Keep source-build distribution truthful until each packaging route is created and verified. No hosted CI or paid model calls are part of local validation.
+Local `cargo install --path . --locked` installs a binary with bundled native adapter assets. Bash is the first Linux-tested path; other shells require explicit `--experimental` extraction. `reedline-ai adapter install --shell bash --directory NEW_DIRECTORY` extracts them explicitly; it never edits profiles or enables itself. See [installation and removal](install.md). `cargo install --git ... --rev VERIFIED_COMMIT --locked` requires that revision to be published. No crates.io publication, apt repository/.deb, automatic shell setup, or name/trademark clearance is claimed. Keep source-build distribution truthful until each packaging route is created and verified. No hosted CI or paid model calls are part of local validation.

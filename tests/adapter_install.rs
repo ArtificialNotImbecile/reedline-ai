@@ -69,7 +69,7 @@ fn install_and_uninstall_refuse_symlinks() {
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
-fn unsupported_shell_is_not_claimed_installed() {
+fn experimental_shell_requires_explicit_acknowledgment() {
     let root = temporary();
     let path = root.join("adapter");
     let result = Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
@@ -80,4 +80,110 @@ fn unsupported_shell_is_not_claimed_installed() {
     assert!(!result.status.success());
     assert!(!path.exists());
     fs::remove_dir(root).unwrap();
+}
+
+#[test]
+fn experimental_packages_are_self_contained_and_removed_safely() {
+    for (shell, entry, helper) in [
+        ("powershell", "ReedlineAI.psm1", "AdapterProcess.cs"),
+        ("nushell", "nushell/reedline-ai.nu", "shared/bridge.py"),
+        ("cmd", "cmd/reedline-ai.lua", "shared/bridge.py"),
+    ] {
+        let root = temporary();
+        let path = root.join("experimental package");
+        let result = Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+            .args([
+                "adapter",
+                "install",
+                "--shell",
+                shell,
+                "--experimental",
+                "--directory",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(path.join(entry).is_file());
+        assert!(path.join(helper).is_file());
+        let result = Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+            .args(["adapter", "uninstall", "--shell", shell, "--directory"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(!path.exists());
+        fs::remove_dir(root).unwrap();
+    }
+}
+#[test]
+fn nested_package_extra_file_prevents_any_removal() {
+    let root = temporary();
+    let path = root.join("nu");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+            .args([
+                "adapter",
+                "install",
+                "--shell",
+                "nushell",
+                "--experimental",
+                "--directory"
+            ])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(path.join("shared/personal.py"), b"retain").unwrap();
+    assert!(
+        !Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+            .args(["adapter", "uninstall", "--shell", "nushell", "--directory"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(path.join("nushell/reedline-ai.nu").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_package_directory_symlink_is_not_followed() {
+    use std::os::unix::fs::symlink;
+    let root = temporary();
+    let path = root.join("nu");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+            .args([
+                "adapter",
+                "install",
+                "--shell",
+                "nushell",
+                "--experimental",
+                "--directory"
+            ])
+            .arg(&path)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let real = root.join("retained-shared");
+    fs::rename(path.join("shared"), &real).unwrap();
+    symlink(&real, path.join("shared")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_reedline-ai"))
+        .args(["adapter", "uninstall", "--shell", "nushell", "--directory"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(real.join("bridge.py").exists());
+    assert!(path.join("nushell/reedline-ai.nu").exists());
+    fs::remove_dir_all(root).unwrap();
 }

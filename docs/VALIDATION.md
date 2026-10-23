@@ -119,3 +119,55 @@ Minimum Bash is 5.1 because native PROMPT_COMMAND arrays preserve prompt code.
 Full Vi editing, macOS/Git Bash/Windows terminals, real HTTP-provider latency and
 SSH remain unverified. Other adapters have separate experimental validation
 records and are not implied validated by this Bash milestone.
+
+## Experimental native adapters and installation (2026-10-23)
+
+PowerShell and Nushell are real explicit-key native-editor adapters, packaged
+with their helpers inside the binary. CMD requires optional Clink and remains
+**Windows-native unverified**. Extraction requires `--experimental`; sourcing or
+importing remains a separate user action. No profile, history, credential, SSH or
+system-security setup is performed by the installer.
+
+Final evidence on this Linux host:
+
+- Ordinary `scripts/ci-local.sh` passed, including 27 existing Python tests,
+  10 shared transport tests, debug/release Rust checks, all previous desktop and
+  Bash PTYs, and clean-HOME installed Bash enable/disable/removal. A final Rust
+  rerun passed 135 tests per profile, with one existing ignored test each.
+- PowerShell 7.4.6 with PSReadLine 2.3.5 passed 66 transport/stub/registration
+  assertions and real Linux PTYs: Unicode FIM, native Tab/history/undo, async
+  input, explicit preview/accept, risk refusal, stale checks, cancel and disable.
+  The tested terminal uses F6/F7/F8; default Ctrl+Alt delivery was unreliable.
+- Nushell 0.116.1 passed 14 real-runtime tests including actual Rust mock results,
+  grapheme/byte conversion, native editing/history/Tab, no blank requests,
+  separate preview/accept, stale prompts, draining cancellation, flood/timeout
+  rejection, and real shell exit without surviving helper/backend processes.
+- `scripts/ci-experimental-local.sh` passed both native suites again and clean-HOME
+  offline Cargo installation/extraction/doctor/enable/native-test/disable/uninstall
+  for PowerShell and Nushell. Extracted paths contain spaces, helper assets are
+  bundled, and no runtime checkout dependency is introduced. Shared transport
+  tests also run against the extracted Nu helper.
+- `texlua integrations/cmd/test_adapter.lua` passed mocked Clink lifecycle,
+  asynchronous handoff, selection/risk/stale guards, native bindings and explicit
+  next-prompt disable. This is **not** execution on Windows or real Clink.
+- Installer tests cover explicit experimental acknowledgment, nested assets,
+  changed/extra-file preservation and nested-directory symlink refusal.
+  Cargo's package-file listing includes all embedded adapter/helper sources.
+  Doctor probes were checked against available Bash/Python/PowerShell/Nu versions.
+
+Independent review found and resolved descendant-held-output timeout hangs,
+unbounded capture, hard-killed Nu helper orphaning, and ownership-safe disable
+edge cases. POSIX cleanup uses a private lifeline supervisor; Windows uses a
+kill-on-close Job Object but that Windows path is not runtime-validated here.
+Early Nu PTY attempts also exposed fixed-delay test races under concurrent
+builds; final tests wait for explicit readiness/PID evidence rather than assuming
+startup time. Final native and installed suites passed with those synchronization
+corrections; assertions were not weakened into retries of acceptance outcomes.
+
+Remaining limits are material: Windows/macOS terminals and native Windows ACL/
+Job behavior remain unverified. PowerShell cannot identify a new prompt with
+identically retyped text during its short preview lifetime, so use the dedicated
+cancel key; its descendant cleanup is best-effort. Nu job APIs are experimental.
+PS/Nu/CMD block every risky or incomplete review rather than offering Bash's
+extra acknowledgment path. No paid provider call, fresh DS latency claim, hosted
+CI run, actual SSH session or cross-platform binary release is implied.

@@ -13,3 +13,12 @@ Keep these boundaries intact:
 5. No real credentials or paid services in tests.
 
 For terminal behavior changes, manually test typing while a completion is pending, changing the cursor, canceling, closing a menu, and accepting a result after an edit. State which OS/terminal was tested. Do not claim untested providers or terminals work.
+
+
+Native experimental runtimes have a separate mandatory opt-in gate when changing
+those adapters: set `REEDLINE_AI_PWSH` and `NU_BINARY` to installed PowerShell/Nu
+executables, then run `bash scripts/ci-experimental-local.sh` after the ordinary
+local gate. It refuses missing runtimes instead of reporting a skipped suite as
+native validation. It includes self-contained installed-module checks in a clean
+HOME. This Linux/POSIX gate is not a Windows CMD/Clink test. Do not change profiles,
+execution policies, real histories or credentials to make these tests pass.

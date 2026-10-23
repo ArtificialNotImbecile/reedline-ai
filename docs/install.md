@@ -1,6 +1,8 @@
-# Install and try native Bash completion
+# Install native shell adapters
 
-This milestone bundles the Bash adapter **inside the Rust binary**. `cargo install` does not require you to keep the source checkout for runtime use. No crates.io/apt package or prebuilt cross-platform release is claimed. PowerShell/Nushell/Clink integrations are separate experimental source integrations until their packaging and platform gates pass.
+The native adapters and their transport helpers are bundled **inside the Rust binary**. `cargo install` does not require you to keep the source checkout for runtime use. No crates.io/apt package or prebuilt cross-platform release is claimed. Bash has the first complete Linux installation gate. PowerShell, Nushell and CMD+Clink are explicitly experimental and require `--experimental` when extracting; their native platform limits remain below.
+
+## Bash quickstart
 
 Requirements: Linux with Bash ≥5.1, Python ≥3.9 and a UTF-8 locale; source build additionally needs the repository's pinned Rust toolchain. Tested in isolated Linux Bash PTYs, not macOS's bundled Bash 3.2, Windows Git Bash, or arbitrary terminal/locale combinations.
 
@@ -54,3 +56,61 @@ REEDLINE_AI_ARGS=(--backend http --endpoint https://YOUR_PROVIDER/chat/completio
 The existing default `REEDLINE_AI_API_KEY` environment variable is read by the backend. Never pass the key as an argument or write it into an adapter file. `REEDLINE_AI_TIMEOUT_SECONDS` sets the adapter wall deadline (default eight seconds, maximum sixty). Real provider performance, account access and paid API calls are not part of installation tests.
 
 See [Bash keys, lifecycle, and caveats](bash-adapter.md) and [the shared JSON contract](adapter-protocol.md).
+
+
+## Experimental packages
+
+All packages default to the offline mock and must be explicitly enabled in the real shell. `adapter install` only extracts files. `adapter doctor --shell powershell|nushell|cmd` checks available prerequisites on PATH, not full terminal compatibility. No runtime or Clink installation, profile edits, API setup, or security-policy changes happen automatically.
+
+### PowerShell
+
+Requires PowerShell ≥7.2 and PSReadLine ≥2.2; tested on Linux PowerShell 7.4.6/PSReadLine 2.3.5, not Windows/macOS. The module must be allowed to compile its adjacent trusted C# helper. Do not weaken execution/security policies for it.
+
+```powershell
+reedline-ai adapter doctor --shell powershell
+reedline-ai adapter install --shell powershell --experimental --directory "$HOME/reedline-ai-powershell"
+Import-Module "$HOME/reedline-ai-powershell/ReedlineAI.psm1"
+Enable-ReedlineAI -Binary reedline-ai -RequestChord F6 -AcceptChord F7 -CancelChord F8
+```
+
+Type `echo 世`; F6 requests, F6 again shows the ready preview, F7 inserts, F8 discards. These function keys are the Linux-tested fallback; the default Ctrl+Alt chords may not arrive correctly from every terminal. Existing bindings cause enable to refuse rather than overwrite. Risky **and incomplete** results (including Git) are blocked, not silently accepted. Native Ctrl-C alone cannot invalidate an identically retyped buffer during the short preview lifetime: use the explicit discard key. Read [the exact PowerShell caveats](powershell-adapter.md).
+
+```powershell
+Disable-ReedlineAI
+reedline-ai adapter uninstall --shell powershell --directory "$HOME/reedline-ai-powershell"
+```
+
+### Nushell
+
+Requires the experimental job/commandline APIs tested on Nu 0.116.1 and Python ≥3.10. Extract first (the parent directory must already exist), then in Nu:
+
+```nu
+reedline-ai adapter doctor --shell nushell
+reedline-ai adapter install --shell nushell --experimental --directory ($env.HOME | path join 'reedline-ai-nushell')
+```
+
+Finish the extraction command first. Nu resolves `source` while parsing, so do not paste installation and sourcing as one block on a fresh setup. Then run this separate block:
+
+```nu
+$env.REEDLINE_AI_EXECUTABLE = (which reedline-ai | first | get path)
+source ~/reedline-ai-nushell/nushell/reedline-ai.nu
+reedline-ai-enable
+```
+
+Use Ctrl+Alt+g to request, Ctrl+Alt+p to preview, Ctrl+Alt+a to accept, and Ctrl+Alt+x to discard. Native binding conflicts refuse enable. Keep the extracted `nushell` and `shared` directories together. Risky or incomplete suggestions are blocked. See [Nushell lifecycle and runtime limits](nushell-adapter.md).
+
+```nu
+reedline-ai-disable
+reedline-ai adapter uninstall --shell nushell --directory ($env.HOME | path join 'reedline-ai-nushell')
+```
+
+### CMD with Clink
+
+Stock CMD is not supported by a native predictor interface here. The adapter requires separately installed Clink ≥1.7.12 and Python ≥3.10 on Windows, explicit absolute executable paths, private temporary storage and working Job Object containment. **Windows/Clink native execution has not been validated in this Linux environment.** Portable transport tests and Lua mocks are not a Windows pass.
+
+```bat
+reedline-ai adapter doctor --shell cmd
+reedline-ai adapter install --shell cmd --experimental --directory "%LOCALAPPDATA%\reedline-ai-clink"
+```
+
+Follow the [CMD/Clink guide](cmd-adapter.md) for its explicit session-only loading and disable steps. Keep its `cmd` and `shared` directories together. Do not add it to an existing Clink profile until you have tested it in a disposable session. Removal uses `adapter uninstall --shell cmd --directory` with the same path after disabling the session.
