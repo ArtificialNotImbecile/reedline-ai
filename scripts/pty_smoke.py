@@ -51,9 +51,24 @@ def send(data, wait=0.25):
     pump(wait)
 
 
+def type_git_prefix_with_hint():
+    # Async completion/repaint is not guaranteed within send()'s 250 ms pump.
+    # Gate only the setup on a newly rendered hint; the regression input batches
+    # below remain single writes, and acceptance assertions are never retried.
+    start = len(transcript)
+    send(b"git st")
+    deadline = time.monotonic() + 3
+    shown_hint = b"\x1b[90matus\x1b[0m"
+    while shown_hint not in transcript[start:] and time.monotonic() < deadline:
+        pump(0.05)
+    assert shown_hint in transcript[start:], (
+        "Timed out waiting for a fresh visible suffix hint", bytes(transcript[start:])
+    )
+
+
 try:
     pump(0.5)
-    send(b"git st")
+    type_git_prefix_with_hint()
     send(b"\x06")  # Ctrl-F accepts suffix hint.
     send(b"\r")
     assert b"Accepted (not executed): git status" in transcript, bytes(transcript)
@@ -74,27 +89,27 @@ try:
     # the previous render's hint. Repeated hint keys must be one-shot.
     for hint_key in [b"\x06", b"\x1b[C", b"\x05", b"\x1b[1;5C"]:
         send(b":history-clear\r")  # Isolate AI fallback from newly restored local history.
-        send(b"git st")
+        type_git_prefix_with_hint()
         start = len(transcript)
         send(b"a" + hint_key + b"\r")
         assert b"Accepted (not executed): git sta" in transcript[start:], bytes(transcript[start:])
         assert b"git staatus" not in transcript[start:], bytes(transcript[start:])
         send(b":history-clear\r")
-        send(b"git st")
+        type_git_prefix_with_hint()
         start = len(transcript)
         send(hint_key + hint_key + b"\r")
         assert b"Accepted (not executed): git status" in transcript[start:], bytes(transcript[start:])
         assert b"git statusatus" not in transcript[start:], bytes(transcript[start:])
     # AI hints must respect the same native nonempty-selection guard.
     send(b":history-clear\r")
-    send(b"git st")
+    type_git_prefix_with_hint()
     send(b"\x01\x1b[1;2F")
     start = len(transcript)
     send(b"\x06\r")
     assert b"Accepted (not executed): git st\r" in transcript[start:], bytes(transcript[start:])
     send(b":history-clear\r")
     # Earlier acceptance must not be revoked by later typing in the same batch.
-    send(b"git st")
+    type_git_prefix_with_hint()
     start = len(transcript)
     send(b"\x06 --short\r")
     assert b"Accepted (not executed): git status --short" in transcript[start:], bytes(transcript[start:])

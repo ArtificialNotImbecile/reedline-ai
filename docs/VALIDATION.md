@@ -61,3 +61,25 @@ Dependency advisory check: `cargo-audit` 0.22.2 checked the lockfile on 2026-10-
 ## Mobile milestone
 
 `bash scripts/ci-local.sh` now includes `scripts/pty_mobile.py` against debug and release builds, using 20-column Linux POSIX PTYs, synthetic project memory, all three risk policies, Unicode previews, cancellation/edit invalidation, empty input, ordinary-text quit and EOF. The script verifies that accepting a synthetic `touch` candidate does not create its target file. Unit tests cover bounded sanitized Unicode wrapping, line-reader errors/draining, backend errors, stale results, exact typed workflow steps, local-history priority and no blank AI calls. Desktop smoke suites remain in the aggregate gate. These checks do not validate actual phone apps, SSH/Tailscale, Windows terminals or non-Bash execution.
+
+## Bounded SSH adapter contract experiment (2026-10-23)
+
+The isolated [SSH feasibility harness](ssh-adapter-feasibility.md) passed eight
+new offline contract tests. It executes a fixed local helper in a synthetic cwd
+and uses an in-process relay; it does not connect over SSH, deploy to a remote
+host, open a listener, use credentials, or validate interactive fallback. Real
+SSH/forwarding/PTY integration remains unverified pending an approved disposable
+server/authentication fixture.
+
+The final local aggregate passed on Linux: 27 Python tests; 118 Rust tests in
+each debug/release profile (one existing ignored test per profile); formatting,
+Clippy, both builds, headless examples, and AI/native/risk/mobile PTY suites for
+both builds. No hosted workflow or real model API was invoked.
+
+An initial aggregate attempt failed an existing batched-hint PTY assertion:
+`git st` was submitted before the expected `git status` completion. The test
+previously waited a fixed 250 ms rather than requiring an asynchronously rendered
+hint. Its setup now waits up to three seconds for a fresh visible `atus` hint;
+regression input batches and acceptance assertions remain unchanged and are not
+retried. A focused PTY run and the final full aggregate passed. This fixes a test
+synchronization gap, not a claimed production bug or latency guarantee.
