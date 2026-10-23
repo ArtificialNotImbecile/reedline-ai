@@ -17,7 +17,7 @@ The POSIX PTY harness drives the actual binary, responds to terminal cursor-posi
 
 The HTTP tests use a local disposable TCP service. They check request content/auth, infill context, response parsing, body limits, timeouts, redirect refusal, and redacted errors. No real provider credentials, remote model inference, purchases or paid API requests were used.
 
-Repository CI is configured for Linux, macOS and Windows, with PTY smoke on Linux. Local passes do not imply hosted CI has already passed; check the actual run for the published commit.
+The initial published commit `459b8747ae6b7b605826b3f24f635ba6c0d65b44` passed [hosted checks on Linux, macOS and Windows](https://github.com/ArtificialNotImbecile/reedline-ai/actions/runs/39926660746), including Linux PTY smoke, on 2026-10-23. Hosted CI is now manual-only (`workflow_dispatch`), with no push or pull-request trigger. Routine validation uses `bash scripts/ci-local.sh` on Linux/macOS, without starting hosted workflows or calling remote model APIs. A local pass verifies that host only; it does not establish a new cross-platform result.
 
 Known limitations remain intentional: no command execution, no native shell integration, no native FIM-token adapter, no streaming or active HTTP cancellation, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
 

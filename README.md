@@ -104,19 +104,30 @@ Reedline buffer + UTF-8 cursor
 
 ## 开发与验证
 
+默认在本机运行 CI，不消耗 GitHub Actions 额度。Linux / macOS 安装 Bash、Python 3 和固定 Rust 工具链后，一条命令执行格式检查、lint、debug/release 测试与构建、headless 示例和两套 PTY 回归：
+
+```sh
+bash scripts/ci-local.sh
+```
+
+脚本可从任意工作目录调用；遇到失败立即停止，不会触发 GitHub Actions 或请求远端模型。首次安装工具链/下载 Rust 依赖仍可能联网；HTTP 测试仅使用 loopback。它只验证当前操作系统，不模拟其他平台。
+
+Windows 或需要逐项排查时，可在本机执行以下 Rust 检查（POSIX PTY 脚本不支持 Windows）：
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo test --locked --release
 cargo build --locked --release
-# POSIX terminal smoke test after building the debug binary:
-cargo build --locked
-python3 scripts/pty_smoke.py
+cargo run --locked -- --complete "git st"
 ```
 
 测试覆盖：suffix/FIM、Unicode 光标、无效/超限输入、异步 debounce、缓存、过期结果、取消、候选接受边界、端到端本地 HTTP payload/auth、重定向拒绝、超时、脱敏错误与不安全输出。HTTP 测试只连接一次性 loopback 服务，不需要付费 API、密钥或模型。
 
-GitHub Actions 对 Linux / macOS / Windows 执行格式、lint 和测试。交互式 terminal smoke test 与 headless 测试是不同层面；不要把单元测试通过等同于所有终端已兼容。
+GitHub Actions 仅保留手动 `workflow_dispatch`：push 和 pull request 不会自动运行。确有需要时，在仓库 Actions → CI (manual) → Run workflow 手动启动 Linux / macOS / Windows 检查；手动运行仍可能消耗额度。日常验证优先使用本地脚本。
+
+交互式 terminal smoke test 与 headless 测试是不同层面；不要把单元测试通过等同于所有终端已兼容。
 
 ## 当前限制与后续方向
 

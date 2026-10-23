@@ -1,6 +1,8 @@
 # Contributing
 
-Use the pinned Rust toolchain and run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked` before proposing changes. Include a regression test for fixes.
+Use the pinned Rust toolchain and run `bash scripts/ci-local.sh` on Linux/macOS before proposing changes. It requires Bash and Python 3 and includes formatting, lint, debug/release tests, builds, and terminal smoke checks. For Windows, use the individual Rust commands in README; POSIX PTY checks are not supported there. Include a regression test for fixes.
+
+Validation is local-first. GitHub Actions only runs through an explicit manual `workflow_dispatch`; pushes and pull requests do not trigger hosted CI. Do not start hosted runs or use paid model APIs as part of routine validation.
 
 Keep these boundaries intact:
 
