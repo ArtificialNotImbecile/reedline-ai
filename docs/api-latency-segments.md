@@ -185,3 +185,73 @@ connection checkpoints. Do not promise subsecond API latency from these samples.
 - [DeepSeek chat API and streaming usage](https://api-docs.deepseek.com/api/create-chat-completion/)
 - [DeepSeek current CNY pricing](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/), checked 2026-10-23
 - [libcurl timing and connection observations](https://curl.se/libcurl/c/curl_easy_getinfo.html)
+
+## Windows comparison: 2026-10-23
+
+A second six-request run of the same published diagnostic at revision `02b0184`
+completed at `2026-10-23T10:05:13.000641Z`. It used PycURL 7.48.0 and libcurl
+8.22.0; the reported TLS backend string was `(OpenSSL/3.6.4) Schannel`. All six
+requests returned HTTP 200 over HTTP/2, with the same synthetic inputs, model,
+128-token output cap and disabled thinking as the cloud run.
+
+This run explicitly disabled application-level proxy use with an empty
+`CURLOPT_PROXY`. HTTP/HTTPS/ALL proxy environment variables were absent;
+`NO_PROXY` was present, and WinHTTP reported direct access. No proxy or other
+system settings were changed. These checks establish no configured application
+proxy for this run, **not** the absence of transparent network intermediaries.
+
+### Windows timing observations
+
+Every timing column is cumulative milliseconds from request start. DNS, TCP,
+AppConnect, pretransfer and TTFB use libcurl's timer; first content and end use the
+monotonic client timer. TTFB is not first model content. SSE DONE timings were not
+included in this comparison dataset and are not inferred from response end.
+
+| Body / connection | DNS complete | TCP complete | AppConnect complete | Pretransfer | TTFB | First content | End | New connections |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| minimal / fresh | 39.034 | 64.984 | 438.308 | 438.552 | 532.112 | 1146.256 | 1166.464 | 1 |
+| minimal / reused 1 | 0.000 | 0.000 | 0.000 | 0.113 | 179.062 | 795.406 | 882.020 | 0 |
+| minimal / reused 2 | 0.000 | 0.000 | 0.000 | 0.123 | 115.023 | 732.877 | 803.506 | 0 |
+| product / fresh | 47.994 | 79.039 | 175.538 | 175.653 | 276.043 | 463.884 | 600.978 | 1 |
+| product / reused 1 | 0.000 | 0.000 | 0.000 | 0.149 | 97.734 | 787.004 | 865.629 | 0 |
+| product / reused 2 | 0.000 | 0.000 | 0.000 | 0.241 | 108.481 | 656.218 | 715.022 | 0 |
+
+Each group's first request opened one connection; its subsequent requests opened
+none and retained connection ID 0. IDs belong to each handle, so the two groups'
+identical ID values do not imply one shared connection across groups. All prompt
+cache-hit counts were zero. Each minimal request used 20 input tokens, each
+product request 130, and every request generated one output token. The complete
+run used 450 input and 6 output tokens, an uncached peak-price estimate of
+CNY 0.000948, not a reconciled invoice.
+
+### What this comparison supports
+
+- Fresh observed TCP establishment **after DNS** took 25.950 ms and 31.045 ms.
+  The post-TCP interval through AppConnect completion was 373.324 ms and
+  96.499 ms. Neither fresh connection showed the cloud run's approximately
+  3.0–4.6 second post-TCP setup interval.
+- Reused first-content times were **733–795 ms** for the minimal request and
+  **656–787 ms** for the product request. The corresponding cloud observations
+  were 880–989 ms and 884–1,137 ms. This particular Windows run therefore did
+  not reproduce the multi-second setup delay seen on the cloud proxy path.
+- This is **not a controlled causal experiment**: the runs occurred at different
+  times, on different networks and machines, with different TLS environments.
+  The observations are consistent with a path/setup-specific contribution to
+  the cloud delay, but do not isolate which proxy, upstream, TLS or provider
+  condition caused it, nor quantify a general Windows-versus-cloud advantage.
+- The fresh product request reached first content in 464 ms, faster than its
+  reused requests. This highlights per-request variation: connection reuse
+  avoids measured setup work but does not guarantee that every reused request
+  beats every fresh request. The fresh minimal request still took 1,146 ms to
+  first content, so even this run does **not** establish a subsecond guarantee.
+- These are streaming API observations, not actual terminal display latency.
+  The existing Rust app's nonstreaming completion, intentional debounce,
+  worker scheduling and UI polling remain separate. The local Rust preparation
+  measurements above were made on the cloud executor; they were not repeated
+  on Windows in this comparison.
+
+The narrower conclusion is that local CPU work did not explain the observed
+seconds-long cloud delay, and ordinary TCP establishment was not itself the
+seconds-long component in either run. Persistent connections remain useful,
+while any stronger explanation of the cold cloud path would require additional
+instrumentation rather than assumptions about DeepSeek's inference time.
