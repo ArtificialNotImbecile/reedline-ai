@@ -6,6 +6,20 @@ A small Rust playground for asynchronous suffix and cursor-aware infill completi
 
 > 当前是可运行的 MVP，不是 shell 替代品。按 Enter 只显示接受的文本，不会执行命令。默认使用确定性的离线 mock，不联网，也不需要 API key。
 
+## Shell-aware workflows and editable local memory
+
+The standalone prototype now supports explicit target-shell context, exact configured workflow phrases such as `run CCTV`, and previewable whole-line replacements. It is still **not a shell plugin** and never executes commands. Native Reedline history and keys remain first priority; Tab previews complex replacements, Enter accepts only.
+
+```sh
+cargo run --locked -- suggest --shell cmd --buffer 'ls'
+cargo run --locked -- suggest --shell bash --config examples/project-memory.synthetic.json --buffer 'run CCTV'
+cargo run --locked -- --shell bash --config examples/project-memory.synthetic.json
+```
+
+All fixture paths are synthetic. JSON project memory is user-editable, with explicit global/project/local/CLI-file layers, strict local-only settings and management commands. Nothing is auto-discovered or learned from real histories. Empty/whitespace input sends no AI request; the 180 ms debounce is unchanged. HTTP completions can include explicitly supplied shell metadata, but still return insertion-only text; deterministic local replacements are separate.
+
+See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md) and the [truthful implementation roadmap](docs/ROADMAP.md). Shell adapters, configurable command-risk review, and a mobile interaction mode are subsequent stages, not delivered capabilities.
+
 ## 快速开始
 
 需要 Rust 工具链（[官方安装说明](https://www.rust-lang.org/tools/install)）。仓库固定 Rust 1.99.1 / Reedline 0.52.1；首次构建会下载依赖。
@@ -117,8 +131,8 @@ cargo run --locked -- --help
 
 ## 隐私与安全边界
 
-- 默认 mock 不发出网络请求。HTTP 模式会在你停止编辑约 180 ms 后自动发送**当前行的 prefix/suffix**，包括行内可能存在的敏感内容；请勿输入秘密。请求还包含固定系统提示、模型名及生成参数。
-- 历史默认仅用于本地匹配；仅 `--ai-history` 允许筛选历史进入 prompt。工作目录、任意文件、剪贴板和环境变量不加入上下文；只读取显式 `--history-file` 作为本应用历史。HTTP 模式读取指定 API key；显式网络选项可读取代理/CA 配置用于传输，不作为 prompt。
+- 默认 mock 不发出网络请求。HTTP 模式会在你停止编辑约 180 ms 后自动发送**当前行的 prefix/suffix**，包括行内可能存在的敏感内容；请勿输入秘密。显式提供的 shell 类型、版本、命令/alias 信息也会加入请求。空白行不请求 AI。请求还包含固定系统提示、模型名及生成参数。
+- 历史默认仅用于本地匹配；仅 `--ai-history` 允许筛选历史进入 prompt。不会自动采集工作目录、任意文件、剪贴板或环境变量；只读取显式选择的历史和项目配置文件。配置文件本身不上传，但接受工作流后展开的路径/命令成为当前输入，在明确启用的 HTTP 模式下可能随后发送。HTTP 模式读取指定 API key；显式网络选项可读取代理/CA 配置用于传输，不作为 prompt。
 - 不记录请求正文、API key 或原始错误响应。失败信息经过脱敏。模型 API key 只用于该 endpoint 的 Authorization header，不保存到磁盘；这不是内存清零或防止本机管理员读取进程的保证。
 - 禁止 HTTP 重定向和请求重试，禁止带凭据/query/fragment 的 endpoint URL。远端只允许 HTTPS，明文 HTTP 仅允许 loopback。代理和平台 CA 必须分别显式 opt-in。
 - 当前行最多 8 KiB，AI 插入文本最多 1 KiB，响应体最多 64 KiB；模型输出最多 128 tokens。请求另受上面的保守总预算约束。本地历史提示不是模型输出，仍按安全的 8 KiB 单行边界处理。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
@@ -136,7 +150,10 @@ Reedline buffer + UTF-8 cursor
       native history hint / local history menu
            │ no local match
            ▼
-      Context { prefix, suffix, optional history }
+      explicit local workflow / shell-intent preview (Tab only)
+           │ no local match
+           ▼
+      Context { prefix, suffix, optional history, optional shell }
            │
            ▼
    debounce / bounded cache / generation check
@@ -157,8 +174,10 @@ Reedline buffer + UTF-8 cursor
 - `src/main.rs`：CLI、显式网络/历史上传选择、非执行 REPL、离线预览与 one-shot JSON 模式。
 - `src/local_history.rs`：共享原生历史、安全过滤、可选持久化与只读预览。
 - `src/history_context.rs`：显式历史筛选、去重/排除和可复现的保守预算。
+- `src/shell.rs` / `src/structured_edit.rs`：显式 shell 元信息、保守渲染和完整 buffer 绑定的替换。
+- `src/project_memory.rs` / `src/workflow.rs` / `src/commands.rs`：本地 JSON 分层管理、精确工作流解析和离线结构化 CLI。
 
-真正的 FIM 必须把整个 buffer 传给 completer。菜单使用 `InputMode::FullBuffer` 和 `OutputMode::SuggestedSpan`，候选替换区间为 `[cursor, cursor)`。因此仅插入，不覆盖后缀。Reedline 目前把 hinter 灰字画在缓冲区末尾，故中间补全用菜单展示，不伪装成中间 ghost text。
+传统插入式 FIM 必须把整个 buffer 传给 completer。菜单使用 `InputMode::FullBuffer` 和 `OutputMode::SuggestedSpan`，候选替换区间为 `[cursor, cursor)`。因此 legacy AI/FIM 仅插入，不覆盖后缀。新的确定性本地工作流候选使用显式替换 span，并由完整原始 buffer + 光标校验阻止过期接受。Reedline 目前把 hinter 灰字画在缓冲区末尾，故中间补全用菜单展示，不伪装成中间 ghost text。
 
 ## 开发与验证
 

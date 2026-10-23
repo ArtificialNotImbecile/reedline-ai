@@ -11,6 +11,8 @@ pub struct Context {
     pub(crate) suffix: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     history: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shell: Option<crate::shell::ShellContext>,
 }
 
 // Do not accidentally include user input in diagnostic output.
@@ -44,7 +46,19 @@ impl Context {
             prefix: prefix.into(),
             suffix: suffix.into(),
             history: Vec::new(),
+            shell: None,
         })
+    }
+
+    /// Attach explicitly supplied shell identity, never inferred from the OS.
+    pub fn with_shell(mut self, shell: crate::shell::ShellContext) -> Result<Self, &'static str> {
+        shell.validate()?;
+        self.shell = Some(shell);
+        Ok(self)
+    }
+
+    pub fn shell(&self) -> Option<&crate::shell::ShellContext> {
+        self.shell.as_ref()
     }
 
     pub fn prefix(&self) -> &str {
@@ -79,7 +93,7 @@ impl Context {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.prefix.is_empty() && self.suffix.is_empty()
+        self.prefix.trim().is_empty() && self.suffix.trim().is_empty()
     }
 
     /// Insert verbatim at the original cursor without replacing the suffix.

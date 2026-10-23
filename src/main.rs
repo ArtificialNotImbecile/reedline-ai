@@ -5,6 +5,7 @@ use reedline::{
 };
 use reedline_ai::{
     backend::{Backend, HttpBackend, HttpNetworkOptions, HttpProvider, MockBackend},
+    commands::{Commands, ConfigArgs, ShellArgs},
     context::{Context, safe_display},
     editor::{AiCompleter, AiHinter, AiPrompt, SafeEmacs},
     engine::{Engine, EngineConfig, Outcome},
@@ -32,10 +33,17 @@ enum ProviderKind {
 #[derive(Parser)]
 #[command(
     version,
+    args_conflicts_with_subcommands = true,
     about = "AI suffix/FIM completion playground. Never executes commands.",
     after_help = "Default: offline deterministic mock. HTTP mode automatically sends the current line's prefix and suffix to the explicitly selected endpoint after a pause. Do not type secrets. History stays local unless --ai-history is explicitly enabled. No cwd or files are sent."
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Commands>,
+    #[command(flatten)]
+    shell: ShellArgs,
+    #[command(flatten)]
+    config: ConfigArgs,
     #[arg(long, value_enum, default_value = "mock")]
     backend: BackendKind,
     /// Full chat-completions URL. HTTPS, or loopback HTTP only.
@@ -98,6 +106,14 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(command) = args.command {
+        return reedline_ai::commands::run(command);
+    }
+    let shell = args.shell.context()?;
+    let project_memory = args.config.load()?;
+    if project_memory.is_some() && shell.is_none() {
+        return Err("project workflows require an explicit --shell".into());
+    }
     if ![8192, 16384].contains(&args.request_budget) {
         return Err("--request-budget must be 8192 or 16384 (conservative estimate units, not actual tokens)".into());
     }
@@ -117,7 +133,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let context_for =
         |buffer: &str, cursor: usize| -> Result<Context, Box<dyn std::error::Error>> {
-            let context = Context::new(buffer, cursor)?;
+            let mut context = Context::new(buffer, cursor)?;
+            if let Some(shell) = &shell {
+                context = context.with_shell(shell.clone())?;
+            }
             Ok(
                 select_history(&context, &history.recent(500), &history_config)?
                     .into_context(context)?,
@@ -212,6 +231,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "OFF"
         }
     );
+    if shell.is_some() {
+        println!(
+            "Explicit shell context enabled. Tab previews configured workflows or shell-intent replacements; Enter accepts only."
+        );
+    }
     println!(
         "Ctrl-F accepts an end hint. Tab opens FIM; Enter accepts it. Escape closes the menu."
     );
@@ -241,15 +265,14 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     );
     let menu = reedline_ai::editor::completion_menu();
     let mut editor = Reedline::create()
-        .with_completer(Box::new(AiCompleter::with_history(
-            engine.clone(),
-            history.clone(),
-            history_config.clone(),
-        )))
-        .with_hinter(Box::new(AiHinter::with_history_config(
-            engine.clone(),
-            history_config.clone(),
-        )))
+        .with_completer(Box::new(
+            AiCompleter::with_history(engine.clone(), history.clone(), history_config.clone())
+                .with_local_context(shell.clone(), project_memory.clone()),
+        ))
+        .with_hinter(Box::new(
+            AiHinter::with_history_config(engine.clone(), history_config.clone())
+                .with_local_context(shell.clone(), project_memory.clone()),
+        ))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
         .with_menu(ReedlineMenu::HistoryMenu(Box::new(
             reedline::ListMenu::default().with_name("history_menu"),

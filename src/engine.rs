@@ -486,6 +486,47 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
     #[test]
+    fn whitespace_cancels_queued_requests_even_with_history_and_cursor_in_middle() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::new(
+            Arc::new(CountingBackend(calls.clone())),
+            EngineConfig {
+                debounce: Duration::from_millis(40),
+                ..fast_config()
+            },
+        );
+        engine.request("git st", 6);
+        let blank = Context::new("   ", 1)
+            .unwrap()
+            .with_history(vec!["git status".into()])
+            .unwrap();
+        assert_eq!(engine.request_context(blank), Outcome::Idle);
+        thread::sleep(Duration::from_millis(70));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(engine.take_rendered_hint().is_none());
+    }
+    #[test]
+    fn whitespace_discards_inflight_results_and_pending_queue() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let engine = Engine::new(
+            Arc::new(GatedBackend {
+                started: started_tx,
+                release: Mutex::new(release_rx),
+            }),
+            fast_config(),
+        );
+        engine.request("old", 3);
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        engine.request("queued", 6);
+        assert_eq!(engine.request("  ", 1), Outcome::Idle);
+        release_tx.send(()).unwrap();
+        thread::sleep(Duration::from_millis(30));
+        assert_eq!(engine.outcome(), Outcome::Idle);
+        assert!(started_rx.try_recv().is_err());
+        assert!(engine.take_rendered_hint().is_none());
+    }
+    #[test]
     fn cache_is_bounded_and_expires() {
         let calls = Arc::new(AtomicUsize::new(0));
         let engine = Engine::new(

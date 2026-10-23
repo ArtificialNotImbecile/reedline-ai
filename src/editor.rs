@@ -3,6 +3,9 @@ use crate::{
     engine::{Engine, Outcome},
     history_context::{HistoryContextConfig, select_history},
     local_history::LocalHistory,
+    project_memory::ProjectMemory,
+    shell::ShellContext,
+    workflow::suggest_local,
 };
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -27,6 +30,8 @@ pub struct AiCompleter {
     engine: Engine,
     history: Option<LocalHistory>,
     history_config: HistoryContextConfig,
+    shell: Option<ShellContext>,
+    project_memory: Option<ProjectMemory>,
 }
 impl AiCompleter {
     pub fn new(engine: Engine) -> Self {
@@ -34,6 +39,8 @@ impl AiCompleter {
             engine,
             history: None,
             history_config: HistoryContextConfig::default(),
+            shell: None,
+            project_memory: None,
         }
     }
     pub fn with_history(
@@ -45,13 +52,26 @@ impl AiCompleter {
             engine,
             history: Some(history),
             history_config,
+            shell: None,
+            project_memory: None,
         }
+    }
+}
+impl AiCompleter {
+    pub fn with_local_context(
+        mut self,
+        shell: Option<ShellContext>,
+        memory: Option<ProjectMemory>,
+    ) -> Self {
+        self.shell = shell;
+        self.project_memory = memory;
+        self
     }
 }
 impl Completer for AiCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         self.engine.invalidate_hint();
-        let Ok(context) = Context::new(line, pos) else {
+        let Ok(context) = context_with_shell(line, pos, &self.shell) else {
             self.engine.clear();
             return CompletionResult::fresh(Vec::<Suggestion>::new());
         };
@@ -94,6 +114,33 @@ impl Completer for AiCompleter {
                 return CompletionResult::fresh(suggestions);
             }
         }
+        // Exact local workflow/intent replacements use Reedline's preview menu,
+        // never end-of-line hints. Native history retains first priority.
+        match suggest_local(&context, self.project_memory.as_ref()) {
+            Ok(Some(local)) => {
+                if local.suggestion.apply(line, pos).is_err() {
+                    self.engine.clear();
+                    return CompletionResult::fresh(Vec::<Suggestion>::new());
+                }
+                self.engine.prefer_local(context, "", "");
+                return CompletionResult::fresh(vec![Suggestion {
+                    value: local.suggestion.edit.replacement,
+                    description: Some(if local.warnings.is_empty() {
+                        "local replacement · review, Enter accepts, never executes".into()
+                    } else {
+                        "local replacement · environment label only, no implicit activation · review before accepting".into()
+                    }),
+                    span: Span::new(local.suggestion.edit.start, local.suggestion.edit.end),
+                    append_whitespace: false,
+                    ..Suggestion::default()
+                }]);
+            }
+            Err(_) => {
+                self.engine.prefer_local(context, "", "");
+                return CompletionResult::fresh(Vec::<Suggestion>::new());
+            }
+            Ok(None) => {}
+        }
         let context = match self.history.as_ref() {
             Some(history) => select_history(&context, &history.recent(500), &self.history_config)
                 .and_then(|preview| preview.into_context(context)),
@@ -131,6 +178,8 @@ pub struct AiHinter {
     engine: Engine,
     native: reedline::DefaultHinter,
     history_config: HistoryContextConfig,
+    shell: Option<ShellContext>,
+    project_memory: Option<ProjectMemory>,
 }
 impl AiHinter {
     pub fn new(engine: Engine) -> Self {
@@ -141,7 +190,20 @@ impl AiHinter {
             engine,
             native: reedline::DefaultHinter::default(),
             history_config,
+            shell: None,
+            project_memory: None,
         }
+    }
+}
+impl AiHinter {
+    pub fn with_local_context(
+        mut self,
+        shell: Option<ShellContext>,
+        memory: Option<ProjectMemory>,
+    ) -> Self {
+        self.shell = shell;
+        self.project_memory = memory;
+        self
     }
 }
 impl Hinter for AiHinter {
@@ -155,7 +217,7 @@ impl Hinter for AiHinter {
     ) -> String {
         self.engine.clear_hint_acceptance();
         self.engine.invalidate_hint();
-        let Ok(context) = Context::new(line, pos) else {
+        let Ok(context) = context_with_shell(line, pos, &self.shell) else {
             self.engine.clear();
             return String::new();
         };
@@ -197,6 +259,13 @@ impl Hinter for AiHinter {
                 self.engine.prefer_local(context, "", "");
                 return String::new();
             }
+        }
+        if !matches!(
+            suggest_local(&context, self.project_memory.as_ref()),
+            Ok(None)
+        ) {
+            self.engine.prefer_local(context, "", "");
+            return String::new();
         }
         let mut query =
             reedline::SearchQuery::everything(reedline::SearchDirection::Backward, None);
@@ -241,6 +310,18 @@ impl Hinter for AiHinter {
         self.engine.consume_hint_acceptance()
     }
 }
+fn context_with_shell(
+    line: &str,
+    pos: usize,
+    shell: &Option<ShellContext>,
+) -> Result<Context, &'static str> {
+    let context = Context::new(line, pos)?;
+    match shell {
+        Some(shell) => context.with_shell(shell.clone()),
+        None => Ok(context),
+    }
+}
+
 fn paint_hint(text: String, colored: bool) -> String {
     if colored {
         Style::new().fg(Color::DarkGray).paint(text).to_string()

@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "confirmed": {
+    "CCTV": {
+      "path": "/synthetic/projects/cctv",
+      "aliases": ["cameras"],
+      "environment": "synthetic Python environment, descriptive only",
+      "workflows": {
+        "run": {
+          "aliases": ["start CCTV", "启动监控"],
+          "steps": [
+            {"action": "change_directory"},
+            {"action": "command", "program": "python", "args": ["app.py"]}
+          ]
+        },
+        "test": {
+          "aliases": [],
+          "steps": [
+            {"action": "change_directory"},
+            {"action": "command", "program": "python", "args": ["-m", "pytest"]}
+          ]
+        }
+      }
+    },
+    "Website": {
+      "path": "C:\\Synthetic Projects\\website",
+      "aliases": ["site"],
+      "workflows": {
+        "run": {
+          "aliases": [],
+          "steps": [
+            {"action": "change_directory"},
+            {"action": "command", "program": "npm", "args": ["run", "dev"]}
+          ]
+        }
+      }
+    }
+  },
+  "suggestions": [
+    {
+      "project": "CCTV",
+      "note": "Synthetic unconfirmed note: a different launch script might exist. This note never participates in matching or execution."
+    }
+  ]
+}

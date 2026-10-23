@@ -8,7 +8,7 @@ Keep these boundaries intact:
 
 1. No execution of suggested commands.
 2. No implicit network access, file/history harvesting, key persistence, or sensitive logging.
-3. UTF-8 byte cursors; FIM inserts without replacing existing suffixes.
+3. UTF-8 byte cursors; legacy FIM inserts preserve suffixes. Structured local edits require full source-buffer/cursor identity and explicit preview acceptance.
 4. One bounded worker/queue; never block the editor on inference.
 5. No real credentials or paid services in tests.
 
