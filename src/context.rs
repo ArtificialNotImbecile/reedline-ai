@@ -9,6 +9,8 @@ pub const MAX_INSERTION_BYTES: usize = 1024;
 pub struct Context {
     pub(crate) prefix: String,
     pub(crate) suffix: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    history: Vec<String>,
 }
 
 // Do not accidentally include user input in diagnostic output.
@@ -17,6 +19,11 @@ impl fmt::Debug for Context {
         f.debug_struct("Context")
             .field("prefix_bytes", &self.prefix.len())
             .field("suffix_bytes", &self.suffix.len())
+            .field("history_entries", &self.history.len())
+            .field(
+                "history_bytes",
+                &self.history.iter().map(String::len).sum::<usize>(),
+            )
             .finish()
     }
 }
@@ -36,6 +43,7 @@ impl Context {
         Ok(Self {
             prefix: prefix.into(),
             suffix: suffix.into(),
+            history: Vec::new(),
         })
     }
 
@@ -45,6 +53,29 @@ impl Context {
 
     pub fn suffix(&self) -> &str {
         &self.suffix
+    }
+
+    /// Explicitly attach already selected history. This never reads history or
+    /// enables collection. The HTTP backend separately enforces request budgets.
+    pub fn with_history(mut self, history: Vec<String>) -> Result<Self, &'static str> {
+        if history.len() > crate::history_context::MAX_HISTORY_ENTRIES {
+            return Err("history exceeds the 50-entry limit");
+        }
+        for entry in &history {
+            crate::history_context::validate_history_entry(entry)?;
+        }
+        self.history = history;
+        Ok(self)
+    }
+
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// Remove history without changing the current buffer or cursor.
+    pub fn without_history(mut self) -> Self {
+        self.history.clear();
+        self
     }
 
     pub fn is_empty(&self) -> bool {

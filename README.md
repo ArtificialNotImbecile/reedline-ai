@@ -1,6 +1,6 @@
 # reedline-ai
 
-一个基于 [Reedline](https://github.com/nushell/reedline) 的 Rust AI 命令行补全实验：异步行尾补全 + 保留光标后文本的 fill-in-the-middle（FIM）插入。
+一个基于 [Reedline](https://github.com/nushell/reedline) 的 Rust AI 命令行补全实验：保留原生历史/编辑/菜单，优先本地即时补全，再用异步 AI 做 fallback；支持保留光标后文本的 fill-in-the-middle（FIM）插入。
 
 A small Rust playground for asynchronous suffix and cursor-aware infill completion. **Not a shell, shell plugin, or command-execution agent.**
 
@@ -28,7 +28,33 @@ cargo run --locked
 - Tab：打开 / 切换补全菜单。候选到达不会自动写入。
 - Enter：菜单打开时接受候选；否则提交文本用于显示，不执行。
 - Esc：关闭菜单。Ctrl-C：清空当前输入。Ctrl-D（空行时）或 `:quit`：退出。
-- 采用 Emacs 编辑模式。历史存储关闭。含控制字符、换行或单次超过 8 KiB 的粘贴会整段拒绝，不会先显示再过滤。
+- Up/Down、Ctrl-P/N：原生历史导航；Ctrl-R：原生反向搜索；Alt-F / Alt-Right：接受灰字的下一个词，不是整个候选。
+- Ctrl-Z / Ctrl-G：原生撤销/重做；Shift 选择、剪切/粘贴仍沿用 Reedline 默认 Emacs 行为。Ctrl-X 额外打开原生历史菜单。
+- 默认保留本应用最近 10,000 条内存历史，退出即失；不会读取 bash/zsh/fish 历史。含控制字符、换行或单次超过 8 KiB 的粘贴会整段拒绝，不会先显示再过滤。
+
+## 保留原生体验，AI 只做增量增强
+
+- 灰字首先调用 Reedline 自带的 `DefaultHinter`，直接命中的本地历史立即显示，不等待 debounce 或网络。没有可用本地匹配时才请求 AI。
+- Tab 使用原生 `ColumnarMenu`；本地历史的前缀/后缀匹配先显示，最多 20 个。中间匹配检查最近 500 个前缀候选。AI 不重排、不覆盖已经显示的本地候选，选中项不会因网络返回而跳动。
+- Ctrl-R、历史导航、原生历史菜单、Emacs 编辑、词级接受、撤销/重做和选择保留。安全适配只过滤危险输入并将已显示候选绑定到一次性输入快照；接受候选仍走原生 hint 事件，由 Reedline 自己检查光标、选择和菜单状态，不猜测按键。
+- 这是 Reedline 的编辑/历史组件，不是 Nushell：不会凭空获得 shell parser、命令执行、PATH 命令发现、文件路径/参数语义补全或 Nushell 的语言能力。可以在这里继续组合真正的本地 completer，当前本地补全来源是本应用历史。
+
+### 本地历史与独立的上传开关
+
+默认只保存在内存。需要跨会话保留时，显式指定一个专用于本应用的文件，不要指向真实 shell history：
+
+```sh
+cargo run --locked -- --history-file ./reedline-ai-history.txt
+# 离线预览，文件只读，不创建/裁剪/改写，不调用模型：
+cargo run --locked -- --history-file ./reedline-ai-history.txt \
+  --history-preview 'git ' --history-exclude 'PRIVATE-PROJECT'
+```
+
+持久化采用原生 FileBackedHistory 的容量/同步语义，可能裁剪超过 10,000 条的旧记录；仅预览和 one-shot 读取不会触发这种写入。Unix 新文件及清空后重建文件以 0600 创建；已有文件权限不擅自修改，Windows 使用所在目录 ACL。历史文件要求普通文件，最大 128 MiB；只应使用可信、稳定、归自己所有的路径。原生后端退出时会自动同步，不提供抵御其他本地进程并发替换路径/符号链接的安全边界。不安全条目不会显示或发送。以空格开头的输入和 `:` 应用控制命令不入历史，但空格不是网络隐私开关：当前行仍可能发送。
+
+只有另加 `--ai-history` 才会把筛选后的本应用历史交给已配置的模型；它与 `--backend http` 是独立开关。默认 HTTP 请求仍只有当前行，没有历史。`--history-exclude TEXT` 可重复，按大小写敏感子串排除历史，不改变本地历史，也不拦截当前行。交互输入 `:history-preview PREFIX` 可本地查看拟选历史；`:history-clear` 清空本地历史/持久化文件和 AI 缓存，已发送请求/供应商记录无法收回。预览包含原文，注意终端录屏与日志。
+
+筛选只考察最近 500 条，混合相关与近期记录、精确去重，最多 50 条；单条超过 1 KiB 或含危险格式的记录不发送。默认历史预算 4096、整个请求预算 8192，`--request-budget 16384` 显式扩大总预算。**这些是保守 UTF-8 字节估算单位，不是实际 tokenizer 的 4k/8k/16k tokens。** 估算包含 JSON 转义、固定系统提示、256 协议预留和 128 输出-token 预留；当前行超预算拒绝，历史只选完整条目，不截断命令。通用供应商的 tokenizer/协议不同，所以这不是精确 token 上限保证；通常会比相同数字的实际 token 容量更保守。实际 tokens 以供应商 usage 或匹配 tokenizer 的实验结果为准。排除与字符检查都不是秘密检测器，开启上传前请审阅，无法保证历史里没有秘密。
 
 无需交互终端也能验证：
 
@@ -57,7 +83,7 @@ cargo run --locked -- --backend http \
 
 默认忽略环境代理，只信任内置公共根证书。若你的云环境/企业网络要求代理，可明确添加 `--allow-env-proxy`，按需读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`（含小写形式）。若需要平台/企业 CA，再独立添加 `--trust-native-certs`，使用系统证书及 `SSL_CERT_FILE` / `SSL_CERT_DIR`；TLS 证书验证始终开启。代理 URL 和证书路径不会出现在错误报告里。只启用你信任的网络配置：代理可看到目标地址，受信任的 TLS 检查代理还可能看到正文和 Authorization。
 
-该适配器把 `prefix` / `suffix` 作为独立 JSON 字段放进 user message，要求模型只返回中间插入文本。**这是 prompted infill，不等于模型原生 FIM token 支持**；不依赖供应商是否支持 `/completions` 的 `suffix` 参数。2026-10-23 对 DeepSeek 官方 `deepseek-flash` 做过 3 个合成样例的有限真实 API 验证，见 [验证记录](docs/VALIDATION.md)。这不代表其他模型/供应商或任意命令都已验证。此 MVP 不启动模型服务器。
+该适配器把 `prefix` / `suffix` 作为独立 JSON 字段放进 user message，要求模型只返回中间插入文本。**这是 prompted infill，不等于模型原生 FIM token 支持**；不依赖供应商是否支持 `/completions` 的 `suffix` 参数。2026-10-23 对 DeepSeek 官方 `deepseek-flash` 做过 3 个合成样例烟测和 15 次合成上下文延迟测量，见 [验证记录](docs/VALIDATION.md) 与 [冷热连接/上下文延迟报告](docs/latency-benchmark.md)。这不代表其他模型/供应商或任意命令都已验证。此 MVP 不启动模型服务器。
 
 ### DeepSeek（显式 opt-in）
 
@@ -92,10 +118,10 @@ cargo run --locked -- --help
 ## 隐私与安全边界
 
 - 默认 mock 不发出网络请求。HTTP 模式会在你停止编辑约 180 ms 后自动发送**当前行的 prefix/suffix**，包括行内可能存在的敏感内容；请勿输入秘密。请求还包含固定系统提示、模型名及生成参数。
-- 不将历史、工作目录、文件、剪贴板或环境变量加入模型上下文。默认仅主动读取指定 API key；显式网络选项还会读取代理/CA 配置用于传输和本地信任验证，不作为 prompt。Reedline 提供给 hinter 的 history/cwd 参数被忽略。
+- 历史默认仅用于本地匹配；仅 `--ai-history` 允许筛选历史进入 prompt。工作目录、任意文件、剪贴板和环境变量不加入上下文；只读取显式 `--history-file` 作为本应用历史。HTTP 模式读取指定 API key；显式网络选项可读取代理/CA 配置用于传输，不作为 prompt。
 - 不记录请求正文、API key 或原始错误响应。失败信息经过脱敏。模型 API key 只用于该 endpoint 的 Authorization header，不保存到磁盘；这不是内存清零或防止本机管理员读取进程的保证。
 - 禁止 HTTP 重定向和请求重试，禁止带凭据/query/fragment 的 endpoint URL。远端只允许 HTTPS，明文 HTTP 仅允许 loopback。代理和平台 CA 必须分别显式 opt-in。
-- 每次最多 8 KiB 输入，1 KiB 插入文本，64 KiB 响应体；模型请求最多 128 tokens。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
+- 当前行最多 8 KiB，AI 插入文本最多 1 KiB，响应体最多 64 KiB；模型输出最多 128 tokens。请求另受上面的保守总预算约束。本地历史提示不是模型输出，仍按安全的 8 KiB 单行边界处理。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
 - 一个后台 worker：最多 1 个进行中的请求 + 1 个可替换等待项。没有自动重试。超时默认 8 秒；这不是总费用预算，持续使用远端服务仍可能计费。
 - 缓存只在内存中，默认最多 32 项、60 秒有效；提交/取消时清空。过期结果不能覆盖新输入，也不会重新填入已清空的缓存。按输入顺序消费的一次性已显示候选，防止同批按键重复/过期接受灰字，同时保留“接受后继续输入”的顺序。已发出的请求无法收回；退出可能等待当前 HTTP 超时结束。
 - **绝不执行命令**，但建议本身仍可能错误、重复后缀或具有破坏性。字符过滤不是 shell 语义安全审查。复制到真正 shell 前请自行检查。
@@ -107,7 +133,10 @@ cargo run --locked -- --help
 Reedline buffer + UTF-8 cursor
            │
            ▼
-      validated Context { prefix, suffix }
+      native history hint / local history menu
+           │ no local match
+           ▼
+      Context { prefix, suffix, optional history }
            │
            ▼
    debounce / bounded cache / generation check
@@ -125,13 +154,15 @@ Reedline buffer + UTF-8 cursor
 - `src/engine.rs`：debounce、单 worker、队列合并、缓存、stale suppression、生命周期。
 - `src/backend.rs`：离线 mock、HTTP 请求与脱敏协议错误。
 - `src/editor.rs`：Reedline async completer / hinter / prompt，以及渲染前输入过滤和批量按键接受保护。
-- `src/main.rs`：CLI、显式网络选择、非执行 REPL 与 one-shot JSON 模式。
+- `src/main.rs`：CLI、显式网络/历史上传选择、非执行 REPL、离线预览与 one-shot JSON 模式。
+- `src/local_history.rs`：共享原生历史、安全过滤、可选持久化与只读预览。
+- `src/history_context.rs`：显式历史筛选、去重/排除和可复现的保守预算。
 
 真正的 FIM 必须把整个 buffer 传给 completer。菜单使用 `InputMode::FullBuffer` 和 `OutputMode::SuggestedSpan`，候选替换区间为 `[cursor, cursor)`。因此仅插入，不覆盖后缀。Reedline 目前把 hinter 灰字画在缓冲区末尾，故中间补全用菜单展示，不伪装成中间 ghost text。
 
 ## 开发与验证
 
-默认在本机运行 CI，不消耗 GitHub Actions 额度。Linux / macOS 安装 Bash、Python 3 和固定 Rust 工具链后，一条命令执行格式检查、lint、debug/release 测试与构建、headless 示例和两套 PTY 回归：
+默认在本机运行 CI，不消耗 GitHub Actions 额度。Linux / macOS 安装 Bash、Python 3 和固定 Rust 工具链后，一条命令执行格式检查、lint、debug/release 测试与构建、headless 示例和 AI/native 两套 PTY 回归（各跑 debug/release）：
 
 ```sh
 bash scripts/ci-local.sh
@@ -144,13 +175,13 @@ Windows 或需要逐项排查时，可在本机执行以下 Rust 检查（POSIX 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo test --locked --release
+cargo test --locked --all-targets
+cargo test --locked --release --all-targets
 cargo build --locked --release
 cargo run --locked -- --complete "git st"
 ```
 
-测试覆盖：suffix/FIM、Unicode 光标、无效/超限输入、异步 debounce、缓存、过期结果、取消、候选接受边界、端到端本地 HTTP payload/auth、重定向拒绝、超时、脱敏错误与不安全输出。HTTP 测试只连接一次性 loopback 服务，不需要付费 API、密钥或模型。
+测试覆盖：原生历史/词级提示/导航/搜索/撤销、菜单与搜索模式切换、持久化/只读预览/清空、历史 opt-in HTTP payload、预算超限零连接、suffix/FIM、Unicode 光标、无效/超限输入、异步 debounce、缓存、过期结果、取消、候选接受边界、端到端本地 HTTP payload/auth、重定向拒绝、超时、脱敏错误与不安全输出。HTTP 测试只连接一次性 loopback 服务，不需要付费 API、密钥或模型。
 
 GitHub Actions 仅保留手动 `workflow_dispatch`：push 和 pull request 不会自动运行。确有需要时，在仓库 Actions → CI (manual) → Run workflow 手动启动 Linux / macOS / Windows 检查；手动运行仍可能消耗额度。日常验证优先使用本地脚本。
 

@@ -303,3 +303,44 @@ fn slow_provider_times_out_with_redacted_error() {
     assert!(now.elapsed() < Duration::from_secs(1));
     handle.join().unwrap();
 }
+
+#[test]
+fn cli_history_is_sent_only_with_explicit_opt_in_and_exclusions_apply() {
+    let path = std::env::temp_dir().join(format!("reedline-opt-in-{}", std::process::id()));
+    std::fs::write(&path, "echo synthetic-visible\necho synthetic-excluded\n").unwrap();
+    for enabled in [false, true] {
+        let (endpoint, request, handle) = server("200 OK", response("atus"), "", Duration::ZERO);
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_reedline-ai"));
+        cmd.args([
+            "--backend",
+            "http",
+            "--endpoint",
+            &endpoint,
+            "--model",
+            "local-test",
+            "--complete",
+            "git st",
+            "--history-file",
+            path.to_str().unwrap(),
+            "--history-exclude",
+            "synthetic-excluded",
+        ])
+        .env_remove("REEDLINE_AI_API_KEY");
+        if enabled {
+            cmd.arg("--ai-history");
+        }
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let request = request.recv_timeout(Duration::from_secs(2)).unwrap();
+        let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let context: Value =
+            serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(context.get("history").is_some(), enabled);
+        assert!(!request.contains("synthetic-excluded"));
+        if enabled {
+            assert!(request.contains("synthetic-visible"));
+        }
+        handle.join().unwrap();
+    }
+    std::fs::remove_file(path).unwrap();
+}

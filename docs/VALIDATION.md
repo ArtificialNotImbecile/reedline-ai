@@ -34,6 +34,20 @@ All three preserved the input context and matched the illustrative expected inse
 
 The successful batch reported 340 prompt tokens and 3 completion tokens. At the dated peak uncached prices documented in README, its usage-based upper estimate is CNY 0.000704, not a verified bill. An earlier direct-network attempt failed without returned token usage and is excluded from that estimate; its billing outcome is unknown. There were no automated retries. This small sample does not establish broad completion quality, provider reliability, shell safety, or compatibility with other models.
 
+## Native-first iteration
+
+The 2026-10-23 native-first iteration restores a 10,000-entry native local history store, DefaultHinter prefix matching, history navigation/search/menu and native editing semantics. AI is a fallback, not a replacement or asynchronous reordering of local suggestions. History upload is separately OFF by default; all history fixtures in automated validation are synthetic.
+
+The final local aggregate passed on Linux: formatting, Clippy (`--all-targets -D warnings`), 62 Rust tests in each of debug/release including the latency example tests, 11 offline Python tests, debug/release builds, three headless examples, and both AI and native PTY suites against debug and release binaries. The PTY harness allows a 250 ms render/terminal-processing window; this is a test synchronization allowance, not a measured native completion latency. No hosted workflow or remote model API was invoked by this pipeline.
+
+New regressions cover immediate local hints and FIM while AI debounce is 10 seconds; next-word acceptance; Up/Down and Ctrl-P/N; Ctrl-R accepted through Enter and Ctrl-F; undo; selection guards; active-menu Ctrl-D/Ctrl-F/Escape; stale/repeated/mixed full-word keys in one batch; persistence, owner-private Unix creation/recreation, and read-only previews; opt-in history on actual localhost HTTP payloads; deduplication/exclusions; conservative UTF-8/JSON-budget accounting and zero connections on over-budget rejection. The production budget is explicitly an estimate, not measured tokenizer tokens.
+
+Independent review found and corrected native-mode regressions in the first iteration. Hint acceptance now stages only the once-rendered text and returns the original native Reedline hint event, so Reedline itself checks selection, cursor, menu and undo behavior. Later parsed edits cannot revoke an earlier staged acceptance; no hint is inserted directly by the wrapper. Native search limits remain on the ordinary safe-history path, so a prefix hint does not clone the entire 10,000-entry history on every keypress. Unsafe persisted entries are filtered without rendering their controls.
+
+Optional persistence still inherits the upstream file backend's automatic destructor sync. It is intended for a trusted, stable, app-owned path, not as a race-safe security boundary against another local process replacing that path. In-memory default history avoids this filesystem issue. Existing file permissions are not silently changed.
+
+See the separate [15-request synthetic latency report](latency-benchmark.md). Those paid measurements were manually run outside local CI; a local CI pass never invokes them.
+
 ## Scope and review
 
 The initial published commit `459b8747ae6b7b605826b3f24f635ba6c0d65b44` passed [hosted checks on Linux, macOS and Windows](https://github.com/ArtificialNotImbecile/reedline-ai/actions/runs/39926660746), including Linux PTY smoke, on 2026-10-23. Hosted CI is now manual-only (`workflow_dispatch`), with no push or pull-request trigger. Routine validation uses `bash scripts/ci-local.sh` on Linux/macOS, without starting hosted workflows or calling remote model APIs. A local pass verifies that host only; it does not establish a new cross-platform result.

@@ -84,3 +84,45 @@ fn provider_extensions_and_usage_require_explicit_http_mode() {
     assert_eq!(result["insertion"], "");
     assert!(result["usage"].is_null());
 }
+
+#[test]
+fn preview_is_offline_excludable_read_only_and_does_not_need_api_configuration() {
+    let dir = std::env::temp_dir().join(format!("reedline-preview-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("synthetic-history");
+    let original = (0..10_002)
+        .map(|i| format!("echo synthetic-{i}\n"))
+        .collect::<String>()
+        + "echo PRIVATE-MARKER\n";
+    std::fs::write(&path, &original).unwrap();
+    let output = run(&[
+        "--history-file",
+        path.to_str().unwrap(),
+        "--history-preview",
+        "echo",
+        "--history-exclude",
+        "PRIVATE-MARKER",
+    ]);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["network_request"], false);
+    assert_eq!(result["history_upload_enabled"], false);
+    assert!(
+        !String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("PRIVATE-MARKER")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn invalid_budget_is_rejected_without_echoing_input() {
+    let output = run(&["--request-budget", "9000", "--complete", "PRIVATE-COMMAND"]);
+    assert!(!output.status.success());
+    assert!(
+        !String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("PRIVATE-COMMAND")
+    );
+}

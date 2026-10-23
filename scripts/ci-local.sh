@@ -22,8 +22,8 @@ esac
 
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo test --locked --release
+cargo test --locked --all-targets
+cargo test --locked --release --all-targets
 cargo build --locked
 cargo build --locked --release
 cargo run --locked -- --complete 'git st'
@@ -31,5 +31,7 @@ cargo run --locked -- --complete 'git  --short' --cursor 4
 cargo run --locked -- --complete 'echo 世' --cursor 8
 python3 scripts/pty_smoke.py
 python3 scripts/pty_smoke.py target/release/reedline-ai
+python3 scripts/pty_native.py
+python3 scripts/pty_native.py target/release/reedline-ai
 
 printf '\nLocal CI passed on %s. No hosted workflow or remote model API was invoked.\n' "$(uname -s)"

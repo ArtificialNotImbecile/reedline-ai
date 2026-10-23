@@ -1,6 +1,8 @@
 use crate::{
     context::Context,
     engine::{Engine, Outcome},
+    history_context::{HistoryContextConfig, select_history},
+    local_history::LocalHistory,
 };
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -19,18 +21,92 @@ pub fn completion_menu() -> reedline::ColumnarMenu {
         .with_output_mode(reedline::OutputMode::SuggestedSpan)
 }
 
+/// Native local history is synchronous; AI is a fallback, never a reranker of
+/// an already displayed menu. This keeps selection stable when results arrive.
 pub struct AiCompleter {
     engine: Engine,
+    history: Option<LocalHistory>,
+    history_config: HistoryContextConfig,
 }
 impl AiCompleter {
     pub fn new(engine: Engine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            history: None,
+            history_config: HistoryContextConfig::default(),
+        }
+    }
+    pub fn with_history(
+        engine: Engine,
+        history: LocalHistory,
+        history_config: HistoryContextConfig,
+    ) -> Self {
+        Self {
+            engine,
+            history: Some(history),
+            history_config,
+        }
     }
 }
 impl Completer for AiCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         self.engine.invalidate_hint();
-        match self.engine.request(line, pos) {
+        let Ok(context) = Context::new(line, pos) else {
+            self.engine.clear();
+            return CompletionResult::fresh(Vec::<Suggestion>::new());
+        };
+        if line.starts_with(':') {
+            self.engine.prefer_local(context, "", "");
+            return CompletionResult::fresh(Vec::<Suggestion>::new());
+        }
+        if let Some(history) = &self.history {
+            let mut seen = std::collections::HashSet::new();
+            let mut query =
+                reedline::SearchQuery::everything(reedline::SearchDirection::Backward, None);
+            query.limit = Some(if pos == line.len() { 20 } else { 500 });
+            query.filter = reedline::SearchFilter::from_text_search(
+                reedline::CommandLineSearch::Prefix(context.prefix().into()),
+                None,
+            );
+            let suggestions: Vec<_> = history
+                .search(query)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|entry| {
+                    let candidate = entry.command_line;
+                    let rest = candidate.strip_prefix(context.prefix())?;
+                    let insertion = rest.strip_suffix(context.suffix())?;
+                    if insertion.is_empty() || !seen.insert(insertion.to_string()) {
+                        return None;
+                    }
+                    Some(Suggestion {
+                        value: insertion.into(),
+                        description: Some("local history".into()),
+                        span: Span::new(pos, pos),
+                        append_whitespace: false,
+                        ..Suggestion::default()
+                    })
+                })
+                .take(20)
+                .collect();
+            if !suggestions.is_empty() {
+                self.engine.prefer_local(context, "", "");
+                return CompletionResult::fresh(suggestions);
+            }
+        }
+        let context = match self.history.as_ref() {
+            Some(history) => select_history(&context, &history.recent(500), &self.history_config)
+                .and_then(|preview| preview.into_context(context)),
+            None => Ok(context),
+        };
+        let outcome = match context {
+            Ok(context) => self.engine.request_context(context),
+            Err(_) => {
+                self.engine.clear();
+                Outcome::Idle
+            }
+        };
+        match outcome {
             Outcome::Ready(text) if !text.is_empty() => CompletionResult::fresh(vec![Suggestion {
                 value: text,
                 description: Some("AI insertion · review before using".into()),
@@ -53,10 +129,19 @@ impl Completer for AiCompleter {
 
 pub struct AiHinter {
     engine: Engine,
+    native: reedline::DefaultHinter,
+    history_config: HistoryContextConfig,
 }
 impl AiHinter {
     pub fn new(engine: Engine) -> Self {
-        Self { engine }
+        Self::with_history_config(engine, HistoryContextConfig::default())
+    }
+    pub fn with_history_config(engine: Engine, history_config: HistoryContextConfig) -> Self {
+        Self {
+            engine,
+            native: reedline::DefaultHinter::default(),
+            history_config,
+        }
     }
 }
 impl Hinter for AiHinter {
@@ -64,38 +149,103 @@ impl Hinter for AiHinter {
         &mut self,
         line: &str,
         pos: usize,
-        _history: &dyn History,
+        history: &dyn History,
         use_ansi_coloring: bool,
-        _cwd: &str,
+        cwd: &str,
     ) -> String {
-        let outcome = self.engine.request(line, pos);
+        self.engine.clear_hint_acceptance();
         self.engine.invalidate_hint();
-        // Reedline paints hints after the buffer. Never display middle insertion
-        // there; use the FullBuffer completion menu for FIM instead.
+        let Ok(context) = Context::new(line, pos) else {
+            self.engine.clear();
+            return String::new();
+        };
+        if line.starts_with(':') {
+            self.engine.prefer_local(context, "", "");
+            return String::new();
+        }
+        // Use the actual Reedline history hinter, preserving its latest-prefix
+        // matching and word-token semantics; local matches never wait for AI.
+        if pos == line.len() {
+            let local = self.native.handle(line, pos, history, false, cwd);
+            if !local.is_empty() && !local.chars().any(crate::context::unsafe_char) {
+                self.engine
+                    .prefer_local(context, &local, &self.native.next_hint_token());
+                return paint_hint(local, use_ansi_coloring);
+            }
+        }
+        if pos != line.len() {
+            let mut matches =
+                reedline::SearchQuery::everything(reedline::SearchDirection::Backward, None);
+            matches.limit = Some(500);
+            matches.filter = reedline::SearchFilter::from_text_search(
+                reedline::CommandLineSearch::Prefix(context.prefix().into()),
+                None,
+            );
+            let has_local = history
+                .search(matches)
+                .unwrap_or_default()
+                .iter()
+                .any(|entry| {
+                    Context::new(&entry.command_line, entry.command_line.len()).is_ok()
+                        && entry
+                            .command_line
+                            .strip_prefix(context.prefix())
+                            .and_then(|rest| rest.strip_suffix(context.suffix()))
+                            .is_some_and(|middle| !middle.is_empty())
+                });
+            if has_local {
+                self.engine.prefer_local(context, "", "");
+                return String::new();
+            }
+        }
+        let mut query =
+            reedline::SearchQuery::everything(reedline::SearchDirection::Backward, None);
+        query.limit = Some(500);
+        let mut recent: Vec<_> = if self.history_config.enabled {
+            history
+                .search(query)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| h.command_line)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        recent.reverse();
+        let context = match select_history(&context, &recent, &self.history_config)
+            .and_then(|preview| preview.into_context(context))
+        {
+            Ok(context) => context,
+            Err(_) => {
+                self.engine.clear();
+                return String::new();
+            }
+        };
+        let outcome = self.engine.request_context(context.clone());
+        // Reedline paints hints at buffer end; middle insertions use the menu.
         if pos != line.len() {
             return String::new();
         }
         match outcome {
             Outcome::Ready(text) if !text.is_empty() => {
-                if let Ok(context) = Context::new(line, pos) {
-                    self.engine.publish_rendered_hint(&context, &text);
-                }
-                if use_ansi_coloring {
-                    Style::new().fg(Color::DarkGray).paint(text).to_string()
-                } else {
-                    text
-                }
+                self.engine.publish_rendered_hint(&context, &text);
+                paint_hint(text, use_ansi_coloring)
             }
             _ => String::new(),
         }
     }
     fn complete_hint(&self) -> String {
-        // Native acceptance has no access to the current buffer inside an input
-        // batch. SafeEmacs consumes the shown token into an ordered InsertString.
-        String::new()
+        self.engine.consume_hint_acceptance()
     }
     fn next_hint_token(&self) -> String {
-        String::new()
+        self.engine.consume_hint_acceptance()
+    }
+}
+fn paint_hint(text: String, colored: bool) -> String {
+    if colored {
+        Style::new().fg(Color::DarkGray).paint(text).to_string()
+    } else {
+        text
     }
 }
 
@@ -116,14 +266,14 @@ impl SafeEmacs {
 impl reedline::EditMode for SafeEmacs {
     fn parse_event(&mut self, event: reedline::ReedlineRawEvent) -> reedline::ReedlineEvent {
         let event = self.inner.parse_event(event);
-        if invokes_hint(&event) {
-            if let Some(text) = self.engine.take_rendered_hint() {
-                return reedline::ReedlineEvent::Edit(vec![
-                    // Match Reedline's native hint acceptance: collapse any
-                    // selection and append, rather than replacing selected text.
-                    reedline::EditCommand::MoveToEnd { select: false },
-                    reedline::EditCommand::InsertString(text),
-                ]);
+        if let Some(word_only) = invokes_hint(&event) {
+            let hint = if word_only {
+                self.engine.take_rendered_hint_word()
+            } else {
+                self.engine.take_rendered_hint()
+            };
+            if let Some(text) = hint {
+                self.engine.queue_hint_acceptance(text);
             }
         } else if !matches!(
             event,
@@ -140,15 +290,13 @@ impl reedline::EditMode for SafeEmacs {
     }
 }
 
-fn invokes_hint(event: &reedline::ReedlineEvent) -> bool {
+fn invokes_hint(event: &reedline::ReedlineEvent) -> Option<bool> {
     use reedline::ReedlineEvent as E;
     match event {
-        E::HistoryHintComplete | E::HistoryHintWordComplete => true,
-        E::UntilFound(events) => matches!(
-            events.first(),
-            Some(E::HistoryHintComplete | E::HistoryHintWordComplete)
-        ),
-        _ => false,
+        E::HistoryHintComplete => Some(false),
+        E::HistoryHintWordComplete => Some(true),
+        E::UntilFound(events) => events.first().and_then(invokes_hint),
+        _ => None,
     }
 }
 
@@ -202,8 +350,11 @@ impl Prompt for AiPrompt {
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         "... ".into()
     }
-    fn render_prompt_history_search_indicator(&self, _: PromptHistorySearch) -> Cow<'_, str> {
-        "search disabled> ".into()
+    fn render_prompt_history_search_indicator(&self, search: PromptHistorySearch) -> Cow<'_, str> {
+        reedline::DefaultPrompt::default()
+            .render_prompt_history_search_indicator(search)
+            .into_owned()
+            .into()
     }
 }
 
@@ -309,5 +460,138 @@ mod tests {
             hinter.handle("git  --short", 4, &history, false, "/PRIVATE"),
             ""
         );
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use crate::{
+        backend::{Backend, BackendError},
+        engine::EngineConfig,
+    };
+    use reedline::{FileBackedHistory, HistoryItem};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    struct CountingBackend(Arc<AtomicUsize>);
+    impl Backend for CountingBackend {
+        fn complete(&self, _: &Context) -> Result<String, BackendError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("AI must not replace local".into())
+        }
+    }
+    #[test]
+    fn native_hint_and_word_are_immediate_without_ai_requests() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::new(
+            Arc::new(CountingBackend(calls.clone())),
+            EngineConfig {
+                debounce: Duration::ZERO,
+                ..EngineConfig::default()
+            },
+        );
+        let mut history = FileBackedHistory::new(10).unwrap();
+        history
+            .save(HistoryItem::from_command_line("git status --short"))
+            .unwrap();
+        let mut hinter = AiHinter::new(engine.clone());
+        assert_eq!(
+            hinter.handle("git ", 4, &history, false, ""),
+            "status --short"
+        );
+        assert_eq!(engine.take_rendered_hint_word(), Some("status".into()));
+        assert_eq!(engine.take_rendered_hint(), None);
+        assert_eq!(engine.outcome(), Outcome::Idle);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn native_local_menu_is_immediate_fim_and_stable() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::new(
+            Arc::new(CountingBackend(calls.clone())),
+            EngineConfig::default(),
+        );
+        let mut history = LocalHistory::new(None).unwrap();
+        history
+            .save(HistoryItem::from_command_line("git status --short"))
+            .unwrap();
+        history
+            .save(HistoryItem::from_command_line("git diff --short"))
+            .unwrap();
+        let mut completer =
+            AiCompleter::with_history(engine.clone(), history, HistoryContextConfig::default());
+        let completion = completer.complete("git  --short", 4);
+        assert!(!completion.is_pending());
+        assert_eq!(
+            completion
+                .suggestions()
+                .iter()
+                .map(|s| s.value.as_str())
+                .collect::<Vec<_>>(),
+            ["diff", "status"]
+        );
+        assert!(
+            completion
+                .suggestions()
+                .iter()
+                .all(|s| s.span == Span::new(4, 4))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(completer.poll_completion(), CompletionStatus::Idle);
+    }
+    #[test]
+    fn local_fim_and_hinter_do_not_queue_ai_even_with_history_upload_enabled() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::new(
+            Arc::new(CountingBackend(calls.clone())),
+            EngineConfig {
+                debounce: Duration::ZERO,
+                ..EngineConfig::default()
+            },
+        );
+        let mut history = LocalHistory::new(None).unwrap();
+        history
+            .save(HistoryItem::from_command_line("git status --short"))
+            .unwrap();
+        let config = HistoryContextConfig {
+            enabled: true,
+            ..HistoryContextConfig::default()
+        };
+        let mut completer =
+            AiCompleter::with_history(engine.clone(), history.clone(), config.clone());
+        let mut hinter = AiHinter::with_history_config(engine.clone(), config);
+        assert_eq!(
+            completer.complete("git  --short", 4).suggestions()[0].value,
+            "status"
+        );
+        assert_eq!(hinter.handle("git  --short", 4, &history, false, ""), "");
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(engine.outcome(), Outcome::Idle);
+    }
+
+    #[test]
+    fn native_word_binding_keeps_word_semantics_and_acceptance_is_one_shot() {
+        use reedline::{KeyCode, KeyModifiers, default_emacs_keybindings};
+        let bindings = default_emacs_keybindings();
+        let event = bindings
+            .find_binding(KeyModifiers::ALT, KeyCode::Char('f'))
+            .unwrap();
+        assert_eq!(invokes_hint(&event), Some(true));
+        let engine = Engine::new(
+            Arc::new(CountingBackend(Arc::new(AtomicUsize::new(0)))),
+            EngineConfig::default(),
+        );
+        engine.prefer_local(Context::new("git ", 4).unwrap(), "status --short", "status");
+        let text = engine.take_rendered_hint_word().unwrap();
+        engine.queue_hint_acceptance(text);
+        assert_eq!(engine.consume_hint_acceptance(), "status");
+        assert_eq!(engine.consume_hint_acceptance(), "");
     }
 }

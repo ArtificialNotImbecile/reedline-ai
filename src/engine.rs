@@ -51,7 +51,8 @@ struct State {
     changed: bool,
     shutdown: bool,
     cache: VecDeque<CacheEntry>,
-    rendered_hint: Option<(Context, String)>,
+    rendered_hint: Option<(Context, String, String)>,
+    pending_hint_acceptance: Option<String>,
 }
 struct Shared {
     state: Mutex<State>,
@@ -93,6 +94,7 @@ impl Engine {
                 shutdown: false,
                 cache: VecDeque::new(),
                 rendered_hint: None,
+                pending_hint_acceptance: None,
             }),
             wake: Condvar::new(),
             repaint: Mutex::new(None),
@@ -116,12 +118,13 @@ impl Engine {
         }
     }
 
-    /// A rendered hint is a single-use token. The edit-mode parser resolves
-    /// acceptance into InsertString in input order, before later batch edits.
+    /// A rendered hint is a single-use token. The edit-mode parser snapshots
+    /// acceptance in input order, before later batch edits. Reedline retains
+    /// responsibility for applying the original native hint event.
     pub fn publish_rendered_hint(&self, context: &Context, text: &str) {
         let mut state = self.shared.state.lock().expect("state lock");
         if state.context.as_ref() == Some(context) && state.outcome == Outcome::Ready(text.into()) {
-            state.rendered_hint = Some((context.clone(), text.into()));
+            state.rendered_hint = Some((context.clone(), text.into(), first_word(text)));
         }
     }
 
@@ -131,9 +134,52 @@ impl Engine {
 
     pub fn take_rendered_hint(&self) -> Option<String> {
         let mut state = self.shared.state.lock().expect("state lock");
-        let (context, text) = state.rendered_hint.take()?;
-        (state.context.as_ref() == Some(&context) && state.outcome == Outcome::Ready(text.clone()))
-            .then_some(text)
+        let (context, text, _) = state.rendered_hint.take()?;
+        (state.context.as_ref() == Some(&context)).then_some(text)
+    }
+
+    pub fn take_rendered_hint_word(&self) -> Option<String> {
+        let mut state = self.shared.state.lock().expect("state lock");
+        let (context, _, word) = state.rendered_hint.take()?;
+        (state.context.as_ref() == Some(&context)).then_some(word)
+    }
+
+    /// Local/native results win immediately; pending AI work becomes stale.
+    pub fn prefer_local(&self, context: Context, text: &str, word: &str) {
+        let mut state = self.shared.state.lock().expect("state lock");
+        state.generation = state.generation.wrapping_add(1);
+        state.context = Some(context.clone());
+        state.queued = None;
+        state.outcome = Outcome::Idle;
+        state.changed = false;
+        state.rendered_hint = (!text.is_empty()).then(|| (context, text.into(), word.into()));
+        self.shared.wake.notify_one();
+    }
+
+    /// Preserve parsed input order, then let Reedline execute the ORIGINAL
+    /// hint event with its native selection, menu, cursor, and undo guards.
+    pub fn queue_hint_acceptance(&self, text: String) {
+        self.shared
+            .state
+            .lock()
+            .expect("state lock")
+            .pending_hint_acceptance = Some(text);
+    }
+    pub fn consume_hint_acceptance(&self) -> String {
+        self.shared
+            .state
+            .lock()
+            .expect("state lock")
+            .pending_hint_acceptance
+            .take()
+            .unwrap_or_default()
+    }
+    pub fn clear_hint_acceptance(&self) {
+        self.shared
+            .state
+            .lock()
+            .expect("state lock")
+            .pending_hint_acceptance = None;
     }
 
     pub fn set_repaint(&self, repaint: impl Fn() + Send + Sync + 'static) {
@@ -141,7 +187,14 @@ impl Engine {
     }
 
     pub fn request(&self, buffer: &str, cursor: usize) -> Outcome {
-        let context = Context::new(buffer, cursor);
+        self.request_validated(Context::new(buffer, cursor))
+    }
+
+    pub fn request_context(&self, context: Context) -> Outcome {
+        self.request_validated(Ok(context))
+    }
+
+    fn request_validated(&self, context: Result<Context, &'static str>) -> Outcome {
         let mut state = self.shared.state.lock().expect("state lock");
         let context = match context {
             Ok(context) => context,
@@ -228,9 +281,20 @@ impl Engine {
         state.queued = None;
         state.outcome = Outcome::Idle;
         state.cache.clear();
+        state.pending_hint_acceptance = None;
         state.changed = false;
         self.shared.wake.notify_one();
     }
+}
+
+fn first_word(text: &str) -> String {
+    // Ask the native hinter for its Unicode-aware word boundary semantics.
+    use reedline::{Hinter, History};
+    let mut history = reedline::FileBackedHistory::new(1).expect("bounded history");
+    let _ = history.save(reedline::HistoryItem::from_command_line(format!("x{text}")));
+    let mut hinter = reedline::DefaultHinter::default();
+    hinter.handle("x", 1, &history, false, "");
+    hinter.next_hint_token()
 }
 
 fn run_worker(shared: Arc<Shared>, backend: Arc<dyn Backend>) {
@@ -456,5 +520,51 @@ mod tests {
         let engine = Engine::new(Arc::new(UnsafeBackend), fast_config());
         engine.request("a", 1);
         assert!(matches!(wait_ready(&engine), Outcome::Error(_)));
+    }
+}
+
+#[cfg(test)]
+mod local_race_tests {
+    use super::*;
+    use crate::backend::BackendError;
+    use std::sync::mpsc;
+    struct Gated {
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl Backend for Gated {
+        fn complete(&self, _: &Context) -> Result<String, BackendError> {
+            self.started.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            Ok("AI result".into())
+        }
+    }
+    #[test]
+    fn inflight_ai_cannot_clobber_a_native_history_hint() {
+        let (tx, rx) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let engine = Engine::new(
+            Arc::new(Gated {
+                started: tx,
+                release: Mutex::new(gate),
+            }),
+            EngineConfig {
+                debounce: Duration::ZERO,
+                ..EngineConfig::default()
+            },
+        );
+        engine.request("git ", 4);
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        engine.prefer_local(Context::new("git ", 4).unwrap(), "status --short", "status");
+        release.send(()).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(engine.outcome(), Outcome::Idle);
+        assert_eq!(engine.take_rendered_hint(), Some("status --short".into()));
+        engine.clear();
+        assert_eq!(engine.take_rendered_hint(), None);
     }
 }

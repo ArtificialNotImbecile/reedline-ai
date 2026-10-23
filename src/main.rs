@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use reedline::{
-    FileBackedHistory, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    History, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
     default_emacs_keybindings,
 };
 use reedline_ai::{
@@ -8,6 +8,8 @@ use reedline_ai::{
     context::{Context, safe_display},
     editor::{AiCompleter, AiHinter, AiPrompt, SafeEmacs},
     engine::{Engine, EngineConfig, Outcome},
+    history_context::{HistoryContextConfig, RequestBudget, select_history},
+    local_history::LocalHistory,
 };
 use std::{
     io::{self, IsTerminal},
@@ -31,7 +33,7 @@ enum ProviderKind {
 #[command(
     version,
     about = "AI suffix/FIM completion playground. Never executes commands.",
-    after_help = "Default: offline deterministic mock. HTTP mode automatically sends the current line's prefix and suffix to the explicitly selected endpoint after a pause. Do not type secrets. No history, cwd, or files are sent."
+    after_help = "Default: offline deterministic mock. HTTP mode automatically sends the current line's prefix and suffix to the explicitly selected endpoint after a pause. Do not type secrets. History stays local unless --ai-history is explicitly enabled. No cwd or files are sent."
 )]
 struct Args {
     #[arg(long, value_enum, default_value = "mock")]
@@ -66,6 +68,21 @@ struct Args {
     /// UTF-8 byte offset for --complete (default: end of input).
     #[arg(long, requires = "complete")]
     cursor: Option<usize>,
+    /// Persist ONLY this application's history to an explicitly selected file.
+    #[arg(long)]
+    history_file: Option<std::path::PathBuf>,
+    /// Explicitly send selected local history to the configured model (OFF by default).
+    #[arg(long)]
+    ai_history: bool,
+    /// Exclude history containing this case-sensitive substring from AI context (repeatable).
+    #[arg(long)]
+    history_exclude: Vec<String>,
+    /// Offline JSON preview of history selected for this input; never calls a model.
+    #[arg(long, conflicts_with_all = ["complete", "report_usage", "ai_history"])]
+    history_preview: Option<String>,
+    /// Conservative request allowance, NOT measured tokens; includes output/protocol reserves.
+    #[arg(long, default_value_t = 8192, value_parser = clap::value_parser!(u32).range(8192..=16384))]
+    request_budget: u32,
     #[arg(long)]
     no_color: bool,
 }
@@ -81,6 +98,31 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    if ![8192, 16384].contains(&args.request_budget) {
+        return Err("--request-budget must be 8192 or 16384 (conservative estimate units, not actual tokens)".into());
+    }
+    let mut history = if args.complete.is_some() || args.history_preview.is_some() {
+        LocalHistory::read_only(args.history_file.clone())?
+    } else {
+        LocalHistory::new(args.history_file.clone())?
+    };
+    let history_config = HistoryContextConfig {
+        enabled: args.ai_history,
+        budget: RequestBudget::new(args.request_budget as usize, 4096)?,
+        exclusions: args.history_exclude.clone(),
+    };
+    if let Some(input) = &args.history_preview {
+        print_history_preview(input, &history, &history_config)?;
+        return Ok(());
+    }
+    let context_for =
+        |buffer: &str, cursor: usize| -> Result<Context, Box<dyn std::error::Error>> {
+            let context = Context::new(buffer, cursor)?;
+            Ok(
+                select_history(&context, &history.recent(500), &history_config)?
+                    .into_context(context)?,
+            )
+        };
     let backend: Arc<dyn Backend> = match args.backend {
         BackendKind::Mock => {
             if args.endpoint.is_some()
@@ -106,6 +148,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     trust_native_certs: args.trust_native_certs,
                 },
             )?
+            .with_request_budget(history_config.budget)?
             .with_provider(match args.provider {
                 ProviderKind::Generic => HttpProvider::Generic,
                 ProviderKind::Deepseek => HttpProvider::DeepSeek,
@@ -113,7 +156,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             if args.report_usage {
                 let buffer = args.complete.as_deref().expect("clap complete");
                 let cursor = args.cursor.unwrap_or(buffer.len());
-                let context = Context::new(buffer, cursor)?;
+                let context = context_for(buffer, cursor)?;
                 let (insertion, usage) = if context.is_empty() {
                     (String::new(), None)
                 } else {
@@ -132,7 +175,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some(buffer) = &args.complete {
         let cursor = args.cursor.unwrap_or(buffer.len());
-        let context = Context::new(buffer, cursor)?;
+        let context = context_for(buffer, cursor)?;
         let insertion = if context.is_empty() {
             String::new()
         } else {
@@ -159,6 +202,17 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!(
+        "Native local history: Up/Down, Ctrl-R search, Alt-F next hint word, Ctrl-X history menu."
+    );
+    println!(
+        "History upload: {}. :history-preview PREFIX previews; :history-clear clears local history.",
+        if args.ai_history {
+            "ON (selected history may be sent)"
+        } else {
+            "OFF"
+        }
+    );
+    println!(
         "Ctrl-F accepts an end hint. Tab opens FIM; Enter accepts it. Escape closes the menu."
     );
     println!(
@@ -180,12 +234,27 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ReedlineEvent::MenuNext,
         ]),
     );
+    bindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('x'),
+        ReedlineEvent::Menu("history_menu".into()),
+    );
     let menu = reedline_ai::editor::completion_menu();
     let mut editor = Reedline::create()
-        .with_completer(Box::new(AiCompleter::new(engine.clone())))
-        .with_hinter(Box::new(AiHinter::new(engine.clone())))
+        .with_completer(Box::new(AiCompleter::with_history(
+            engine.clone(),
+            history.clone(),
+            history_config.clone(),
+        )))
+        .with_hinter(Box::new(AiHinter::with_history_config(
+            engine.clone(),
+            history_config.clone(),
+        )))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
-        .with_history(Box::new(FileBackedHistory::new(0)?))
+        .with_menu(ReedlineMenu::HistoryMenu(Box::new(
+            reedline::ListMenu::default().with_name("history_menu"),
+        )))
+        .with_history(Box::new(history.clone()))
         .with_edit_mode(Box::new(SafeEmacs::new(bindings, engine.clone())))
         .with_quick_completions(false)
         .with_partial_completions(false)
@@ -205,6 +274,24 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 if line.trim() == ":quit" {
                     break;
                 }
+                if line.trim() == ":history-clear" {
+                    history.clear()?;
+                    history.sync()?;
+                    println!(
+                        "Local history and AI cache cleared. Already-sent requests cannot be recalled."
+                    );
+                    continue;
+                }
+                if let Some(input) = line.strip_prefix(":history-preview") {
+                    if let Err(error) = print_history_preview(
+                        input.strip_prefix(' ').unwrap_or(input),
+                        &history,
+                        &history_config,
+                    ) {
+                        eprintln!("History preview unavailable: {error}");
+                    }
+                    continue;
+                }
                 if let Outcome::Error(error) = outcome {
                     eprintln!("Completion unavailable: {error}");
                 }
@@ -220,5 +307,23 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn print_history_preview(
+    input: &str,
+    history: &LocalHistory,
+    config: &HistoryContextConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let context = Context::new(input, input.len())?;
+    let preview_config = HistoryContextConfig {
+        enabled: true,
+        ..config.clone()
+    };
+    let preview = select_history(&context, &history.recent(500), &preview_config)?;
+    println!(
+        "{}",
+        serde_json::json!({"network_request": false, "history_upload_enabled": config.enabled, "preview": preview})
+    );
     Ok(())
 }

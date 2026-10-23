@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "tokenizer_source": "https://cdn.deepseek.com/api-docs/deepseek_v4_tokenizer.zip",
+  "tokenizer_sha256": "89085f12ef79460ac5f66d1119325ddfc694b4ab209d80bbd81d35f081dc9614",
+  "token_count_note": "Exact local tokenizer counts of compact synthetic history JSON only; API prompt_tokens is the authoritative full-request count.",
+  "targets": [
+    {
+      "nominal_history_tokens": 0,
+      "full_lines": 0,
+      "tail_terms": 0,
+      "local_history_json_tokens": 0
+    },
+    {
+      "nominal_history_tokens": 2000,
+      "full_lines": 99,
+      "tail_terms": 17,
+      "local_history_json_tokens": 2000
+    },
+    {
+      "nominal_history_tokens": 4000,
+      "full_lines": 199,
+      "tail_terms": 17,
+      "local_history_json_tokens": 4000
+    },
+    {
+      "nominal_history_tokens": 8000,
+      "full_lines": 399,
+      "tail_terms": 17,
+      "local_history_json_tokens": 8000
+    },
+    {
+      "nominal_history_tokens": 16000,
+      "full_lines": 799,
+      "tail_terms": 17,
+      "local_history_json_tokens": 16000
+    }
+  ]
+}

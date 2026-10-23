@@ -73,16 +73,26 @@ try:
     # Regression: edit + accept within one Reedline input batch must not use
     # the previous render's hint. Repeated hint keys must be one-shot.
     for hint_key in [b"\x06", b"\x1b[C", b"\x05", b"\x1b[1;5C"]:
+        send(b":history-clear\r")  # Isolate AI fallback from newly restored local history.
         send(b"git st")
         start = len(transcript)
         send(b"a" + hint_key + b"\r")
         assert b"Accepted (not executed): git sta" in transcript[start:], bytes(transcript[start:])
         assert b"git staatus" not in transcript[start:], bytes(transcript[start:])
+        send(b":history-clear\r")
         send(b"git st")
         start = len(transcript)
         send(hint_key + hint_key + b"\r")
         assert b"Accepted (not executed): git status" in transcript[start:], bytes(transcript[start:])
         assert b"git statusatus" not in transcript[start:], bytes(transcript[start:])
+    # AI hints must respect the same native nonempty-selection guard.
+    send(b":history-clear\r")
+    send(b"git st")
+    send(b"\x01\x1b[1;2F")
+    start = len(transcript)
+    send(b"\x06\r")
+    assert b"Accepted (not executed): git st\r" in transcript[start:], bytes(transcript[start:])
+    send(b":history-clear\r")
     # Earlier acceptance must not be revoked by later typing in the same batch.
     send(b"git st")
     start = len(transcript)
