@@ -18,7 +18,19 @@ cargo run --locked -- --shell bash --config examples/project-memory.synthetic.js
 
 All fixture paths are synthetic. JSON project memory is user-editable, with explicit global/project/local/CLI-file layers, strict local-only settings and management commands. Nothing is auto-discovered or learned from real histories. Empty/whitespace input sends no AI request; the 180 ms debounce is unchanged. HTTP completions can include explicitly supplied shell metadata, but still return insertion-only text; deterministic local replacements are separate.
 
-See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md) and the [truthful implementation roadmap](docs/ROADMAP.md). Shell adapters, configurable command-risk review, and a mobile interaction mode are subsequent stages, not delivered capabilities.
+See [configuration, CLI, supported shell grammar and limitations](docs/project-memory.md), [local command-risk review](docs/risk-review.md), and the [truthful implementation roadmap](docs/ROADMAP.md). Shell adapters and a mobile interaction mode remain subsequent stages, not delivered capabilities.
+
+### Local advisory command-risk review
+
+`--risk-policy warn` is the default. The local, bounded shell-aware review shows advisory warnings for generated suggestions and configured workflow previews, without an extra acceptance step or model call. `--risk-policy confirm` requires Tab → F2 → Enter for a candidate with warnings **or an incomplete review**. Enter before F2 does not insert that candidate and closes the native menu; press Tab to reopen it. Editing, navigation, or cancellation invalidates acknowledgment. Whole/word AI hint acceptance cannot bypass this gate; native history hints, history menus, and search are unchanged.
+
+```sh
+cargo run --locked -- --shell bash --risk-policy confirm
+cargo run --locked -- --shell bash --risk-policy warn --complete 'git st'
+cargo run --locked -- suggest --shell bash --risk-policy confirm --buffer 'git st'
+```
+
+`off` hides UI warnings and removes the extra gate, but JSON still includes `risk_policy`, `risk_review` (`warnings`, `incomplete`), and `additional_acceptance_required`. Only the explicit CLI option controls policy: no environment variable, project-memory layer, or global policy file can change it. Missing shell context is explicitly incomplete. This is lexical advisory review, not a complete parser, execution permission system, or safety guarantee. See [coverage, limits, and protocol semantics](docs/risk-review.md).
 
 ## 快速开始
 
@@ -40,7 +52,7 @@ cargo run --locked
 
 - Ctrl-F：接受行尾灰字；不在行尾时沿用 Reedline 的移动行为。
 - Tab：打开 / 切换补全菜单。候选到达不会自动写入。
-- Enter：菜单打开时接受候选；否则提交文本用于显示，不执行。
+- Enter：菜单打开时接受候选；`--risk-policy confirm` 下有风险提示或审查不完整的生成候选需先按 F2。未确认时 Enter 不插入并关闭菜单，Tab 可重新打开。否则提交文本用于显示，不执行。
 - Esc：关闭菜单。Ctrl-C：清空当前输入。Ctrl-D（空行时）或 `:quit`：退出。
 - Up/Down、Ctrl-P/N：原生历史导航；Ctrl-R：原生反向搜索；Alt-F / Alt-Right：接受灰字的下一个词，不是整个候选。
 - Ctrl-Z / Ctrl-G：原生撤销/重做；Shift 选择、剪切/粘贴仍沿用 Reedline 默认 Emacs 行为。Ctrl-X 额外打开原生历史菜单。
@@ -50,7 +62,7 @@ cargo run --locked
 
 - 灰字首先调用 Reedline 自带的 `DefaultHinter`，直接命中的本地历史立即显示，不等待 debounce 或网络。没有可用本地匹配时才请求 AI。
 - Tab 使用原生 `ColumnarMenu`；本地历史的前缀/后缀匹配先显示，最多 20 个。中间匹配检查最近 500 个前缀候选。AI 不重排、不覆盖已经显示的本地候选，选中项不会因网络返回而跳动。
-- Ctrl-R、历史导航、原生历史菜单、Emacs 编辑、词级接受、撤销/重做和选择保留。安全适配只过滤危险输入并将已显示候选绑定到一次性输入快照；接受候选仍走原生 hint 事件，由 Reedline 自己检查光标、选择和菜单状态，不猜测按键。
+- Ctrl-R、历史导航、原生历史菜单、Emacs 编辑、词级接受、撤销/重做和选择保留。安全适配只过滤危险输入并将已显示候选绑定到一次性输入快照；普通提示接受仍走原生 hint 事件，由 Reedline 自己检查光标、选择和菜单状态。confirm 策略下需要额外确认的 AI 候选转入菜单预览，不允许整条/词级提示绕过确认。
 - 这是 Reedline 的编辑/历史组件，不是 Nushell：不会凭空获得 shell parser、命令执行、PATH 命令发现、文件路径/参数语义补全或 Nushell 的语言能力。可以在这里继续组合真正的本地 completer，当前本地补全来源是本应用历史。
 
 ### 本地历史与独立的上传开关
@@ -74,11 +86,11 @@ cargo run --locked -- --history-file ./reedline-ai-history.txt \
 
 ```sh
 cargo run --locked -- --complete 'git st'
-# {"cursor":6,"insertion":"atus","result":"git status"}
+# 核心字段：{"cursor":6,"insertion":"atus","result":"git status"}；另含风险审查元数据。
 cargo run --locked -- --complete 'git  --short' --cursor 4
-# {"cursor":4,"insertion":"status","result":"git status --short"}
+# 核心字段：{"cursor":4,"insertion":"status","result":"git status --short"}；另含风险审查元数据。
 cargo run --locked -- --complete 'echo 世' --cursor 8
-# {"cursor":8,"insertion":"界","result":"echo 世界"}
+# 核心字段：{"cursor":8,"insertion":"界","result":"echo 世界"}；另含风险审查元数据。
 ```
 
 `--cursor` 是 UTF-8 字节偏移，不是字符序号。越界或落在多字节字符内部会报错。
@@ -138,7 +150,7 @@ cargo run --locked -- --help
 - 当前行最多 8 KiB，AI 插入文本最多 1 KiB，响应体最多 64 KiB；模型输出最多 128 tokens。请求另受上面的保守总预算约束。本地历史提示不是模型输出，仍按安全的 8 KiB 单行边界处理。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
 - 一个后台 worker：最多 1 个进行中的请求 + 1 个可替换等待项。没有自动重试。超时默认 8 秒；这不是总费用预算，持续使用远端服务仍可能计费。
 - 缓存只在内存中，默认最多 32 项、60 秒有效；提交/取消时清空。过期结果不能覆盖新输入，也不会重新填入已清空的缓存。按输入顺序消费的一次性已显示候选，防止同批按键重复/过期接受灰字，同时保留“接受后继续输入”的顺序。已发出的请求无法收回；退出可能等待当前 HTTP 超时结束。
-- **绝不执行命令**，但建议本身仍可能错误、重复后缀或具有破坏性。字符过滤不是 shell 语义安全审查。复制到真正 shell 前请自行检查。
+- **绝不执行命令**，但建议本身仍可能错误、重复后缀或具有破坏性。字符过滤和本地词法风险提示都不是完整的 shell 语义安全审查；无警告不代表安全，confirm 也不是执行权限层。复制到真正 shell 前请自行检查。
 - 命令行参数、终端回显、shell 自身历史、崩溃转储及供应商日志不受本程序控制。不要把敏感内容放在 `--complete` 参数里。
 
 ## 架构
@@ -171,6 +183,7 @@ Reedline buffer + UTF-8 cursor
 - `src/engine.rs`：debounce、单 worker、队列合并、缓存、stale suppression、生命周期。
 - `src/backend.rs`：离线 mock、HTTP 请求与脱敏协议错误。
 - `src/editor.rs`：Reedline async completer / hinter / prompt，以及渲染前输入过滤和批量按键接受保护。
+- `src/risk.rs` / `src/review_menu.rs`：有界本地风险提示、显式策略与菜单候选确认；不执行、不增加模型调用。
 - `src/main.rs`：CLI、显式网络/历史上传选择、非执行 REPL、离线预览与 one-shot JSON 模式。
 - `src/local_history.rs`：共享原生历史、安全过滤、可选持久化与只读预览。
 - `src/history_context.rs`：显式历史筛选、去重/排除和可复现的保守预算。

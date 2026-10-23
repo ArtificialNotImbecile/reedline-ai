@@ -5,12 +5,14 @@ use reedline::{
 };
 use reedline_ai::{
     backend::{Backend, HttpBackend, HttpNetworkOptions, HttpProvider, MockBackend},
-    commands::{Commands, ConfigArgs, ShellArgs},
+    commands::{Commands, ConfigArgs, RiskArgs, ShellArgs},
     context::{Context, safe_display},
     editor::{AiCompleter, AiHinter, AiPrompt, SafeEmacs},
     engine::{Engine, EngineConfig, Outcome},
     history_context::{HistoryContextConfig, RequestBudget, select_history},
     local_history::LocalHistory,
+    review_menu::{ReviewGate, ReviewMenu},
+    risk::review,
 };
 use std::{
     io::{self, IsTerminal},
@@ -40,6 +42,8 @@ enum ProviderKind {
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
+    #[command(flatten)]
+    risk: RiskArgs,
     #[command(flatten)]
     shell: ShellArgs,
     #[command(flatten)]
@@ -185,7 +189,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 let result = context.insert(&insertion)?;
                 println!(
                     "{}",
-                    serde_json::json!({"insertion": insertion, "result": result, "cursor": cursor, "usage": usage})
+                    serde_json::json!({"insertion": insertion, "result": result, "cursor": cursor, "usage": usage,"risk_policy":args.risk.risk_policy,"risk_review":review(shell.as_ref(), &result),"additional_acceptance_required":!insertion.is_empty() && review(shell.as_ref(), &result).requires_confirmation(args.risk.risk_policy)})
                 );
                 return Ok(());
             }
@@ -203,7 +207,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let result = context.insert(&insertion)?;
         println!(
             "{}",
-            serde_json::json!({"insertion": insertion, "result": result, "cursor": cursor})
+            serde_json::json!({"insertion": insertion, "result": result, "cursor": cursor,"risk_policy":args.risk.risk_policy,"risk_review":review(shell.as_ref(), &result),"additional_acceptance_required":!insertion.is_empty() && review(shell.as_ref(), &result).requires_confirmation(args.risk.risk_policy)})
         );
         return Ok(());
     }
@@ -263,22 +267,36 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         KeyCode::Char('x'),
         ReedlineEvent::Menu("history_menu".into()),
     );
-    let menu = reedline_ai::editor::completion_menu();
+    println!(
+        "Local risk review: {:?}. Advisory only, not a safety guarantee. Confirm mode: Tab previews, F2 acknowledges, Enter inserts. Native history is unchanged.",
+        args.risk.risk_policy
+    );
+    let gate = ReviewGate::default();
+    bindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::F(2),
+        ReedlineEvent::ExecuteHostCommand("risk-acknowledge".into()),
+    );
+    let menu = ReviewMenu::new(reedline_ai::editor::completion_menu(), gate.clone());
     let mut editor = Reedline::create()
         .with_completer(Box::new(
             AiCompleter::with_history(engine.clone(), history.clone(), history_config.clone())
-                .with_local_context(shell.clone(), project_memory.clone()),
+                .with_local_context(shell.clone(), project_memory.clone())
+                .with_risk_review(args.risk.risk_policy, gate.clone()),
         ))
         .with_hinter(Box::new(
             AiHinter::with_history_config(engine.clone(), history_config.clone())
-                .with_local_context(shell.clone(), project_memory.clone()),
+                .with_local_context(shell.clone(), project_memory.clone())
+                .with_risk_review(args.risk.risk_policy, gate.clone()),
         ))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
         .with_menu(ReedlineMenu::HistoryMenu(Box::new(
             reedline::ListMenu::default().with_name("history_menu"),
         )))
         .with_history(Box::new(history.clone()))
-        .with_edit_mode(Box::new(SafeEmacs::new(bindings, engine.clone())))
+        .with_edit_mode(Box::new(
+            SafeEmacs::new(bindings, engine.clone()).with_review_gate(gate.clone()),
+        ))
         .with_quick_completions(false)
         .with_partial_completions(false)
         .with_poll_interval(Duration::from_millis(33))
@@ -288,6 +306,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = AiPrompt {
         engine: engine.clone(),
         network,
+        review_gate: gate,
     };
     loop {
         match editor.read_line(&prompt)? {

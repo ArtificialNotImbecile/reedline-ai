@@ -11,15 +11,15 @@ The immediate product is a standalone, native-first Reedline prototype that save
 - Explicit global/project/local/CLI-file layering. Project-relative paths require a supplied verified root; personal absolute paths belong in local/global files. No automatic repository discovery yet. Config cannot enable network, choose credentials, upload history, or execute/import code.
 - Deterministic `run <project>`/configured exact phrases, narrow Bash-intent-to-CMD/PowerShell examples, shell-specific conservative rendering, no guessed paths/activation.
 - UTF-8 byte-range replacement/insertion edits tied to the full source buffer and cursor. Headless offline JSON protocol; old `--complete` insertion contract remains.
+- Bounded local shell-aware advisory review of generated/workflow suggestions: CLI-only `--risk-policy warn` (default), `confirm`, or `off`; JSON review metadata and explicit F2 acknowledgment before guarded menu insertion. Incomplete reviews also require acknowledgment under `confirm`. Native history is not intercepted, and no command is executed or extra model called. No global policy file or environment/repository policy override is implemented. This is not comprehensive malicious-command detection or a safety verdict.
 - HTTP receives supplied shell metadata but remains insertion-only. No arbitrary freeform AI workflow planner, model-generated structured replacement, or automatic learning is implemented.
 
-See [project memory](project-memory.md) for exact syntax, rejects and verification limits. Tests of rendered strings are not proof of native-shell compatibility; only harmless Bash parser/literal checks run in this cloud Linux stage.
+See [project memory](project-memory.md) and [risk review](risk-review.md) for exact syntax, rejects and verification limits. Tests of rendered strings are not proof of native-shell compatibility; only harmless Bash parser/literal checks run in this cloud Linux stage.
 
 ## Next, in agreed order (not implemented)
 
-1. Configurable review of **generated suggestions** with local shell/argument/target-aware rules. Design modes for warning and additional acceptance. Keep trusted global/local security policy separate; a repository file must not weaken it. Avoid an extra model call on every command. Reserve protocol space for risk findings and review state; current version has no security verdict. Do not claim comprehensive malicious-command detection or interception of manually typed commands.
-2. Explicit desktop/mobile interaction modes for a remotely installed tool used over a mobile terminal/SSH. Desktop retains Reedline; mobile uses a narrow-screen numbered shortlist and simple accept/cancel without assuming Ctrl/Alt. Submitting natural text produces a preview, never execution. Target shell is the remote shell, not the phone OS. No SSH/Tailscale/server configuration or access is implied.
-3. Per-shell native adapters around the shared Rust backend, opt-in and independently tested. Preserve each host's keybindings, history, cursor units and acceptance guard; do not replace all shells with a custom editor.
+1. Explicit desktop/mobile interaction modes for a remotely installed tool used over a mobile terminal/SSH. Desktop retains Reedline; mobile uses a narrow-screen numbered shortlist and simple accept/cancel without assuming Ctrl/Alt. Submitting natural text produces a preview, never execution. Target shell is the remote shell, not the phone OS. No SSH/Tailscale/server configuration or access is implied.
+2. Per-shell native adapters around the shared Rust backend, opt-in and independently tested. Preserve each host's keybindings, history, cursor units and acceptance guard; do not replace all shells with a custom editor.
 
 ## Adapter research, not shipped
 

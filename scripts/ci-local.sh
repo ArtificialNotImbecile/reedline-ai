@@ -33,5 +33,7 @@ python3 scripts/pty_smoke.py
 python3 scripts/pty_smoke.py target/release/reedline-ai
 python3 scripts/pty_native.py
 python3 scripts/pty_native.py target/release/reedline-ai
+python3 scripts/pty_risk.py
+python3 scripts/pty_risk.py target/release/reedline-ai
 
 printf '\nLocal CI passed on %s. No hosted workflow or remote model API was invoked.\n' "$(uname -s)"

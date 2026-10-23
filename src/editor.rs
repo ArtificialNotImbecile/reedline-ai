@@ -4,6 +4,8 @@ use crate::{
     history_context::{HistoryContextConfig, select_history},
     local_history::LocalHistory,
     project_memory::ProjectMemory,
+    review_menu::ReviewGate,
+    risk::{RiskPolicy, review},
     shell::ShellContext,
     workflow::suggest_local,
 };
@@ -32,6 +34,8 @@ pub struct AiCompleter {
     history_config: HistoryContextConfig,
     shell: Option<ShellContext>,
     project_memory: Option<ProjectMemory>,
+    risk_policy: RiskPolicy,
+    review_gate: ReviewGate,
 }
 impl AiCompleter {
     pub fn new(engine: Engine) -> Self {
@@ -41,6 +45,8 @@ impl AiCompleter {
             history_config: HistoryContextConfig::default(),
             shell: None,
             project_memory: None,
+            risk_policy: RiskPolicy::default(),
+            review_gate: ReviewGate::default(),
         }
     }
     pub fn with_history(
@@ -54,10 +60,17 @@ impl AiCompleter {
             history_config,
             shell: None,
             project_memory: None,
+            risk_policy: RiskPolicy::default(),
+            review_gate: ReviewGate::default(),
         }
     }
 }
 impl AiCompleter {
+    pub fn with_risk_review(mut self, policy: RiskPolicy, gate: ReviewGate) -> Self {
+        self.risk_policy = policy;
+        self.review_gate = gate;
+        self
+    }
     pub fn with_local_context(
         mut self,
         shell: Option<ShellContext>,
@@ -71,8 +84,10 @@ impl AiCompleter {
 impl Completer for AiCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         self.engine.invalidate_hint();
+        self.review_gate.set_status(String::new());
         let Ok(context) = context_with_shell(line, pos, &self.shell) else {
             self.engine.clear();
+            self.review_gate.clear();
             return CompletionResult::fresh(Vec::<Suggestion>::new());
         };
         if line.starts_with(':') {
@@ -111,6 +126,7 @@ impl Completer for AiCompleter {
                 .collect();
             if !suggestions.is_empty() {
                 self.engine.prefer_local(context, "", "");
+                self.review_gate.publish(line, pos, false);
                 return CompletionResult::fresh(suggestions);
             }
         }
@@ -122,10 +138,24 @@ impl Completer for AiCompleter {
                     self.engine.clear();
                     return CompletionResult::fresh(Vec::<Suggestion>::new());
                 }
+                let (result, _) = local.suggestion.apply(line, pos).expect("validated above");
+                let status = review_status(
+                    &self.review_gate,
+                    self.risk_policy,
+                    self.shell.as_ref(),
+                    &result,
+                );
+                self.review_gate.publish(
+                    line,
+                    pos,
+                    review(self.shell.as_ref(), &result).requires_confirmation(self.risk_policy),
+                );
                 self.engine.prefer_local(context, "", "");
                 return CompletionResult::fresh(vec![Suggestion {
                     value: local.suggestion.edit.replacement,
-                    description: Some(if local.warnings.is_empty() {
+                    description: Some(if !status.is_empty() {
+                        status
+                    } else if local.warnings.is_empty() {
                         "local replacement · review, Enter accepts, never executes".into()
                     } else {
                         "local replacement · environment label only, no implicit activation · review before accepting".into()
@@ -154,13 +184,31 @@ impl Completer for AiCompleter {
             }
         };
         match outcome {
-            Outcome::Ready(text) if !text.is_empty() => CompletionResult::fresh(vec![Suggestion {
-                value: text,
-                description: Some("AI insertion · review before using".into()),
-                span: Span::new(pos, pos),
-                append_whitespace: false,
-                ..Suggestion::default()
-            }]),
+            Outcome::Ready(text) if !text.is_empty() => {
+                let result = format!("{}{}{}", &line[..pos], text, &line[pos..]);
+                let status = review_status(
+                    &self.review_gate,
+                    self.risk_policy,
+                    self.shell.as_ref(),
+                    &result,
+                );
+                self.review_gate.publish(
+                    line,
+                    pos,
+                    review(self.shell.as_ref(), &result).requires_confirmation(self.risk_policy),
+                );
+                CompletionResult::fresh(vec![Suggestion {
+                    value: text,
+                    description: Some(if status.is_empty() {
+                        "AI insertion · review before using".into()
+                    } else {
+                        status
+                    }),
+                    span: Span::new(pos, pos),
+                    append_whitespace: false,
+                    ..Suggestion::default()
+                }])
+            }
             Outcome::Pending => CompletionResult::Pending,
             _ => CompletionResult::fresh(Vec::<Suggestion>::new()),
         }
@@ -180,6 +228,8 @@ pub struct AiHinter {
     history_config: HistoryContextConfig,
     shell: Option<ShellContext>,
     project_memory: Option<ProjectMemory>,
+    risk_policy: RiskPolicy,
+    review_gate: ReviewGate,
 }
 impl AiHinter {
     pub fn new(engine: Engine) -> Self {
@@ -192,10 +242,17 @@ impl AiHinter {
             history_config,
             shell: None,
             project_memory: None,
+            risk_policy: RiskPolicy::default(),
+            review_gate: ReviewGate::default(),
         }
     }
 }
 impl AiHinter {
+    pub fn with_risk_review(mut self, policy: RiskPolicy, gate: ReviewGate) -> Self {
+        self.risk_policy = policy;
+        self.review_gate = gate;
+        self
+    }
     pub fn with_local_context(
         mut self,
         shell: Option<ShellContext>,
@@ -217,6 +274,7 @@ impl Hinter for AiHinter {
     ) -> String {
         self.engine.clear_hint_acceptance();
         self.engine.invalidate_hint();
+        self.review_gate.set_status(String::new());
         let Ok(context) = context_with_shell(line, pos, &self.shell) else {
             self.engine.clear();
             return String::new();
@@ -297,6 +355,17 @@ impl Hinter for AiHinter {
         }
         match outcome {
             Outcome::Ready(text) if !text.is_empty() => {
+                let result = format!("{line}{text}");
+                review_status(
+                    &self.review_gate,
+                    self.risk_policy,
+                    self.shell.as_ref(),
+                    &result,
+                );
+                if review(self.shell.as_ref(), &result).requires_confirmation(self.risk_policy) {
+                    // No whole/word hint path may bypass menu acknowledgment.
+                    return String::new();
+                }
                 self.engine.publish_rendered_hint(&context, &text);
                 paint_hint(text, use_ansi_coloring)
             }
@@ -310,6 +379,30 @@ impl Hinter for AiHinter {
         self.engine.consume_hint_acceptance()
     }
 }
+fn review_status(
+    gate: &ReviewGate,
+    policy: RiskPolicy,
+    shell: Option<&ShellContext>,
+    result: &str,
+) -> String {
+    let risk = review(shell, result);
+    let status = if policy == RiskPolicy::Off {
+        String::new()
+    } else {
+        let mut parts = risk.warnings;
+        if risk.incomplete {
+            parts.push("Review incomplete; inspect manually".into());
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("Risk: {} · Tab for preview", parts.join("; "))
+        }
+    };
+    gate.set_status(status.clone());
+    status
+}
+
 fn context_with_shell(
     line: &str,
     pos: usize,
@@ -335,18 +428,41 @@ fn paint_hint(text: String, colored: bool) -> String {
 pub struct SafeEmacs {
     inner: reedline::Emacs,
     engine: Engine,
+    review_gate: ReviewGate,
 }
 impl SafeEmacs {
+    pub fn with_review_gate(mut self, gate: ReviewGate) -> Self {
+        self.review_gate = gate;
+        self
+    }
     pub fn new(bindings: reedline::Keybindings, engine: Engine) -> Self {
         Self {
             inner: reedline::Emacs::new(bindings),
             engine,
+            review_gate: ReviewGate::default(),
         }
     }
 }
 impl reedline::EditMode for SafeEmacs {
     fn parse_event(&mut self, event: reedline::ReedlineRawEvent) -> reedline::ReedlineEvent {
         let event = self.inner.parse_event(event);
+        if matches!(&event, reedline::ReedlineEvent::ExecuteHostCommand(value) if value == "risk-acknowledge")
+        {
+            self.review_gate.authorize();
+            return reedline::ReedlineEvent::Repaint;
+        }
+        if matches!(event, reedline::ReedlineEvent::Enter) {
+            self.review_gate.lock_acceptance();
+        }
+        if !matches!(
+            event,
+            reedline::ReedlineEvent::Enter
+                | reedline::ReedlineEvent::None
+                | reedline::ReedlineEvent::Repaint
+                | reedline::ReedlineEvent::Resize(_, _)
+        ) {
+            self.review_gate.invalidate();
+        }
         if let Some(word_only) = invokes_hint(&event) {
             let hint = if word_only {
                 self.engine.take_rendered_hint_word()
@@ -412,12 +528,17 @@ fn filter_input(event: reedline::ReedlineEvent) -> reedline::ReedlineEvent {
 pub struct AiPrompt {
     pub engine: Engine,
     pub network: bool,
+    pub review_gate: ReviewGate,
 }
 impl Prompt for AiPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
         "reedline-ai".into()
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
+        let status = self.review_gate.status();
+        if !status.is_empty() {
+            return status.into();
+        }
         match self.engine.outcome() {
             Outcome::Pending => "completion pending".into(),
             Outcome::Error(_) => "completion unavailable".into(),

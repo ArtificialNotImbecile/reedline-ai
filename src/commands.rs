@@ -3,6 +3,7 @@ use crate::{
     backend::{Backend, MockBackend},
     context::Context,
     project_memory::{Project, ProjectMemory},
+    risk::{RiskPolicy, review},
     shell::{ShellContext, ShellKind},
     structured_edit::{StructuredSuggestion, TextEdit},
     workflow::suggest_local,
@@ -56,6 +57,14 @@ impl ShellArgs {
 }
 
 #[derive(Clone, Default, Args)]
+pub struct RiskArgs {
+    /// Local advisory review: warn (default), confirm (F2 then Enter), or off.
+    /// Only explicit CLI settings control this; project memory cannot override it.
+    #[arg(long, value_enum, default_value = "warn")]
+    pub risk_policy: RiskPolicy,
+}
+
+#[derive(Clone, Default, Args)]
 pub struct ConfigArgs {
     /// Explicit highest-precedence local JSON memory file. Never auto-discovered/uploaded.
     #[arg(long)]
@@ -102,6 +111,8 @@ pub enum Commands {
 }
 #[derive(Args)]
 pub struct SuggestArgs {
+    #[command(flatten)]
+    pub risk: RiskArgs,
     #[arg(long)]
     pub buffer: String,
     /// UTF-8 byte cursor; defaults to end of buffer.
@@ -201,13 +212,29 @@ pub fn run(command: Commands) -> Result<(), Error> {
                 Some(s) => s.apply(&args.buffer, cursor)?,
                 None => (args.buffer.clone(), cursor),
             };
+            let risk = review(Some(&shell), &result);
+            let confirmation_required =
+                suggestion.is_some() && risk.requires_confirmation(args.risk.risk_policy);
             match args.format {
                 SuggestFormat::Json => println!(
                     "{}",
-                    json!({"protocol_version":1,"preview_only":true,"executes":false,"network_request":false,"shell":shell,"source_buffer":args.buffer,"source_cursor":cursor,"edit":suggestion.as_ref().map(|s| &s.edit),"result":result,"cursor":result_cursor,"source":source,"explanation":explanation,"warnings":warnings})
+                    json!({"protocol_version":1,"preview_only":true,"executes":false,"network_request":false,"shell":shell,"source_buffer":args.buffer,"source_cursor":cursor,"edit":suggestion.as_ref().map(|s| &s.edit),"result":result,"cursor":result_cursor,"source":source,"explanation":explanation,"warnings":warnings,"risk_policy":args.risk.risk_policy,"risk_review":risk,"additional_acceptance_required":confirmation_required})
                 ),
                 // Never source/eval this output. It is ordinary single-line text.
-                SuggestFormat::Line => println!("{result}\n{result_cursor}"),
+                SuggestFormat::Line => {
+                    if args.risk.risk_policy != RiskPolicy::Off {
+                        for warning in &risk.warnings {
+                            eprintln!("Risk review: {warning}");
+                        }
+                        if risk.incomplete {
+                            eprintln!("Risk review incomplete; not a safety guarantee.");
+                        }
+                        if confirmation_required {
+                            eprintln!("Additional acceptance required by policy; preview only.");
+                        }
+                    }
+                    println!("{result}\n{result_cursor}");
+                }
             }
         }
         Commands::Memory(args) => {

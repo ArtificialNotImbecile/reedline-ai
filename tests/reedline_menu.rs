@@ -83,3 +83,54 @@ fn unicode_insertion_works_through_reedline() {
     assert_eq!(editor.get_buffer(), "echo 世界");
     assert_eq!(editor.line_buffer().insertion_point(), 8);
 }
+
+#[test]
+fn generated_whole_result_risk_cannot_use_hint_acceptance() {
+    use reedline::{Completer, FileBackedHistory, Hinter};
+    use reedline_ai::{
+        backend::{Backend, BackendError},
+        context::Context,
+        editor::AiHinter,
+        review_menu::ReviewGate,
+        risk::RiskPolicy,
+        shell::{ShellContext, ShellKind},
+    };
+    struct Fixed;
+    impl Backend for Fixed {
+        fn complete(&self, _: &Context) -> Result<String, BackendError> {
+            Ok("value".into())
+        }
+    }
+    let engine = Engine::new(
+        Arc::new(Fixed),
+        EngineConfig {
+            debounce: Duration::ZERO,
+            ..EngineConfig::default()
+        },
+    );
+    let gate = ReviewGate::default();
+    let shell = Some(ShellContext::new(ShellKind::Bash));
+    let mut hinter = AiHinter::new(engine.clone())
+        .with_local_context(shell.clone(), None)
+        .with_risk_review(RiskPolicy::Confirm, gate.clone());
+    let history = FileBackedHistory::new(0).unwrap();
+    let line = "echo > /synthetic/output ";
+    hinter.handle(line, line.len(), &history, false, "");
+    await_completion(&engine);
+    assert_eq!(hinter.handle(line, line.len(), &history, false, ""), "");
+    assert!(gate.status().contains("overwrite"));
+    assert!(engine.take_rendered_hint().is_none());
+    assert!(engine.take_rendered_hint_word().is_none());
+    let mut completer = AiCompleter::new(engine)
+        .with_local_context(shell, None)
+        .with_risk_review(RiskPolicy::Confirm, gate);
+    let result = completer.complete(line, line.len());
+    assert_eq!(result.suggestions()[0].value, "value");
+    assert!(
+        result.suggestions()[0]
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("overwrite")
+    );
+}

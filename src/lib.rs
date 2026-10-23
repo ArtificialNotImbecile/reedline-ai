@@ -16,3 +16,6 @@ pub mod project_memory;
 pub mod shell;
 pub mod structured_edit;
 pub mod workflow;
+
+pub mod review_menu;
+pub mod risk;

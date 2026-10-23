@@ -126,3 +126,80 @@ fn invalid_budget_is_rejected_without_echoing_input() {
             .contains("PRIVATE-COMMAND")
     );
 }
+
+#[test]
+fn risk_policy_is_explicit_and_headless_reports_unknown_dialect() {
+    for policy in ["warn", "confirm", "off"] {
+        let output = run(&["--risk-policy", policy, "--complete", "git st"]);
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["risk_policy"], policy);
+        assert_eq!(result["risk_review"]["incomplete"], true);
+        assert_eq!(
+            result["additional_acceptance_required"],
+            policy == "confirm"
+        );
+    }
+    let output = run(&[
+        "--risk-policy",
+        "confirm",
+        "--shell",
+        "bash",
+        "--complete",
+        "echo 世",
+    ]);
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["additional_acceptance_required"], false);
+    assert!(
+        !run(&["--risk-policy", "safe", "--complete", "git st"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn risk_preview_reviews_full_result_not_only_insertion() {
+    let output = run(&[
+        "--risk-policy",
+        "confirm",
+        "--shell",
+        "bash",
+        "--complete",
+        "echo 世 > /synthetic/output",
+        "--cursor",
+        "8",
+    ]);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["insertion"], "");
+    assert_eq!(result["additional_acceptance_required"], false);
+    assert!(
+        !result["risk_review"]["warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn repository_memory_cannot_override_risk_policy() {
+    let path = std::env::temp_dir().join(format!(
+        "reedline-ai-risk-policy-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, r#"{"version":1,"confirmed":{},"risk_policy":"off"}"#).unwrap();
+    let output = run(&[
+        "suggest",
+        "--shell",
+        "bash",
+        "--risk-policy",
+        "confirm",
+        "--config",
+        path.to_str().unwrap(),
+        "--buffer",
+        "git st",
+    ]);
+    std::fs::remove_file(path).unwrap();
+    assert!(!output.status.success());
+}
