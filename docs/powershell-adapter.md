@@ -59,8 +59,12 @@ Git's conservative risk review is incomplete, so this adapter blocks it.
 
 A blank input starts **zero** processes/model calls. Multiline input, selections,
 non-filesystem locations, terminal controls, bidi controls, invalid Unicode and
-inputs over 8192 UTF-8 bytes are rejected. Backends may return only an insertion
-of at most 1024 UTF-8 bytes with a matching full result and byte cursor.
+inputs over 8192 UTF-8 bytes are rejected. Protocol v1 remains compatible with insertions of at most 1024 UTF-8 bytes.
+The adapter uses v2 for explicit local workflows: a bounded whole-line
+replacement (at most 8192 UTF-8 bytes) must match its full result and byte
+cursor, pass risk review, and be previewed before separate acceptance.
+Replacement is not arbitrary model-generated command execution; see
+[the v1/v2 contract](adapter-protocol.md).
 
 ### Prompt lifecycle limitation
 
@@ -158,8 +162,10 @@ Verified locally on Linux with portable PowerShell **7.4.6**, PSReadLine **2.3.5
   history. The harness uses a temporary home and no profiles.
 - Default Ctrl+Alt byte sequences were **not reliably delivered** by that PTY;
   the F-key fallback was used, rather than claiming those chords were tested.
-- Windows/macOS terminal behavior is **not verified**. The same-text/new-prompt
-  limitation above still applies, including on the tested Linux runtime.
+- Native Windows validation also passed on Windows **10.0.19045.3803** with
+  PowerShell **7.6.5**, including setup, explicit request/preview/accept and
+  restricted v2 replacement. Windows Terminal GUI and macOS remain unverified.
+  The same-text/new-prompt limitation above still applies on tested platforms.
 
 Run the POSIX-only native smoke with an existing local PowerShell executable:
 

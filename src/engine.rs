@@ -1,5 +1,5 @@
 use crate::{
-    backend::Backend,
+    backend::{Backend, Cancellation},
     context::{Context, validate_insertion},
 };
 use std::{
@@ -13,6 +13,8 @@ use std::{
 pub enum Outcome {
     Idle,
     Pending,
+    /// Display-only incomplete text; never a candidate or acceptance token.
+    Streaming(String),
     Ready(String),
     Error(String),
 }
@@ -50,6 +52,7 @@ struct State {
     outcome: Outcome,
     changed: bool,
     shutdown: bool,
+    active: Option<Cancellation>,
     cache: VecDeque<CacheEntry>,
     rendered_hint: Option<(Context, String, String)>,
     pending_hint_acceptance: Option<String>,
@@ -66,9 +69,15 @@ struct Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.shared.state.lock().expect("state lock").shutdown = true;
+        {
+            let mut state = self.shared.state.lock().expect("state lock");
+            state.shutdown = true;
+            if let Some(active) = state.active.take() {
+                active.cancel();
+            }
+        }
         self.shared.wake.notify_all();
-        // Shutdown waits at most the configured HTTP timeout for a running call.
+        // Built-in HTTP cancels promptly. Custom backends must cooperate with cancellation.
         if let Some(handle) = self.handle.lock().expect("worker lock").take() {
             let _ = handle.join();
         }
@@ -92,6 +101,7 @@ impl Engine {
                 outcome: Outcome::Idle,
                 changed: false,
                 shutdown: false,
+                active: None,
                 cache: VecDeque::new(),
                 rendered_hint: None,
                 pending_hint_acceptance: None,
@@ -147,6 +157,9 @@ impl Engine {
     /// Local/native results win immediately; pending AI work becomes stale.
     pub fn prefer_local(&self, context: Context, text: &str, word: &str) {
         let mut state = self.shared.state.lock().expect("state lock");
+        if let Some(active) = state.active.take() {
+            active.cancel();
+        }
         state.generation = state.generation.wrapping_add(1);
         state.context = Some(context.clone());
         state.queued = None;
@@ -199,6 +212,9 @@ impl Engine {
         let context = match context {
             Ok(context) => context,
             Err(error) => {
+                if let Some(active) = state.active.take() {
+                    active.cancel();
+                }
                 state.generation = state.generation.wrapping_add(1);
                 state.context = None;
                 state.rendered_hint = None;
@@ -210,6 +226,9 @@ impl Engine {
         };
         if state.context.as_ref() == Some(&context) {
             return state.outcome.clone();
+        }
+        if let Some(active) = state.active.take() {
+            active.cancel();
         }
         state.generation = state.generation.wrapping_add(1);
         state.context = Some(context.clone());
@@ -267,14 +286,18 @@ impl Engine {
         let mut state = self.shared.state.lock().expect("state lock");
         (
             std::mem::take(&mut state.changed),
-            matches!(state.outcome, Outcome::Pending),
+            matches!(state.outcome, Outcome::Pending | Outcome::Streaming(_)),
         )
     }
 
     /// Invalidate queued/in-flight work after submit or cancellation, clearing all
-    /// in-memory cached command text. An already-sent HTTP call cannot be recalled.
+    /// in-memory cached command text. Built-in HTTP is aborted locally; already-sent
+    /// data cannot be recalled and provider-side processing may still continue.
     pub fn clear(&self) {
         let mut state = self.shared.state.lock().expect("state lock");
+        if let Some(active) = state.active.take() {
+            active.cancel();
+        }
         state.generation = state.generation.wrapping_add(1);
         state.context = None;
         state.rendered_hint = None;
@@ -299,7 +322,7 @@ fn first_word(text: &str) -> String {
 
 fn run_worker(shared: Arc<Shared>, backend: Arc<dyn Backend>) {
     loop {
-        let job = {
+        let (job, cancellation) = {
             let mut state = shared.state.lock().expect("state lock");
             loop {
                 if state.shutdown {
@@ -308,7 +331,9 @@ fn run_worker(shared: Arc<Shared>, backend: Arc<dyn Backend>) {
                 if let Some(job) = &state.queued {
                     let now = Instant::now();
                     if now >= job.due {
-                        break state.queued.take().expect("queued job");
+                        let cancellation = Cancellation::default();
+                        state.active = Some(cancellation.clone());
+                        break (state.queued.take().expect("queued job"), cancellation);
                     }
                     let duration = job.due - now;
                     state = shared
@@ -321,10 +346,38 @@ fn run_worker(shared: Arc<Shared>, backend: Arc<dyn Backend>) {
                 }
             }
         };
-        let result = backend.complete(&job.context).and_then(|insertion| {
-            validate_insertion(&insertion).map_err(crate::backend::BackendError::UnsafeOutput)?;
-            Ok(insertion)
-        });
+        let mut preview = |text: &str| {
+            if cancellation.is_cancelled() || validate_insertion(text).is_err() {
+                return;
+            }
+            let changed = {
+                let mut state = shared.state.lock().expect("state lock");
+                if state.shutdown
+                    || state.generation != job.generation
+                    || state.context.as_ref() != Some(&job.context)
+                {
+                    false
+                } else {
+                    state.outcome = Outcome::Streaming(text.into());
+                    state.rendered_hint = None;
+                    // Partial text does not trigger a ready menu or enter the cache.
+                    true
+                }
+            };
+            if changed {
+                let repaint = shared.repaint.lock().expect("repaint lock").clone();
+                if let Some(repaint) = repaint {
+                    repaint();
+                }
+            }
+        };
+        let result = backend
+            .complete_progressive(&job.context, &cancellation, &mut preview)
+            .and_then(|insertion| {
+                validate_insertion(&insertion)
+                    .map_err(crate::backend::BackendError::UnsafeOutput)?;
+                Ok(insertion)
+            });
         let should_repaint = {
             let mut state = shared.state.lock().expect("state lock");
             if state.shutdown {
@@ -334,6 +387,7 @@ fn run_worker(shared: Arc<Shared>, backend: Arc<dyn Backend>) {
                 // Do not cache stale work: clear() must not resurrect private input.
                 false
             } else {
+                state.active = None;
                 state.outcome = match result {
                     Ok(insertion) => {
                         if shared.config.cache_capacity > 0 {

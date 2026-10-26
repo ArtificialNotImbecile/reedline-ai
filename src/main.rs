@@ -59,13 +59,16 @@ struct Args {
     config: ConfigArgs,
     #[arg(long, value_enum, default_value = "mock")]
     backend: BackendKind,
+    /// Use the local settings saved by `reedline-ai setup` (explicit network opt-in).
+    #[arg(long, conflicts_with_all = ["backend", "endpoint", "model", "provider", "api_key_env"])]
+    configured: bool,
     /// Full chat-completions URL. HTTPS, or loopback HTTP only.
     #[arg(long, required_if_eq("backend", "http"))]
     endpoint: Option<String>,
     #[arg(long, required_if_eq("backend", "http"))]
     model: Option<String>,
     /// Explicit provider extension. Deepseek disables reasoning; generic adds no extra fields.
-    #[arg(long, value_enum, default_value = "generic")]
+    #[arg(long, value_enum, default_value = "generic", hide = true)]
     provider: ProviderKind,
     /// Explicitly allow HTTP(S)/ALL_PROXY and NO_PROXY environment configuration.
     #[arg(long)]
@@ -81,7 +84,7 @@ struct Args {
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=60))]
     timeout_seconds: u64,
     /// Native shell bridge: read a versioned JSON request from stdin, emit JSON only.
-    #[arg(long, conflicts_with_all = ["complete", "history_preview", "history_file", "ai_history", "shell", "config", "global_config", "project_config", "project_root", "local_config", "history_exclude"])]
+    #[arg(long, conflicts_with_all = ["complete", "history_preview", "history_file", "ai_history", "shell", "history_exclude"])]
     adapter_request: bool,
     /// One-shot completion as JSON, without opening an interactive terminal.
     #[arg(long)]
@@ -121,13 +124,24 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(command) = args.command {
         return reedline_ai::commands::run(command);
     }
+    let saved = if args.configured {
+        let settings = reedline_ai::settings::load(
+            &reedline_ai::settings::directory()?.join("settings.json"),
+        )?;
+        args.backend = BackendKind::Http;
+        args.endpoint = Some(settings.endpoint.clone());
+        args.model = Some(settings.model.clone());
+        Some(settings)
+    } else {
+        None
+    };
     let shell = args.shell.context()?;
     let project_memory = args.config.load()?;
-    if project_memory.is_some() && shell.is_none() {
+    if project_memory.is_some() && shell.is_none() && !args.adapter_request {
         return Err("project workflows require an explicit --shell".into());
     }
     if ![8192, 16384].contains(&args.request_budget) {
@@ -173,7 +187,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(MockBackend)
         }
         BackendKind::Http => {
-            let key = std::env::var(&args.api_key_env).ok();
+            let key = std::env::var(&args.api_key_env)
+                .ok()
+                .or_else(|| saved.as_ref().and_then(|s| s.api_key.clone()));
             let http = HttpBackend::new_with_network(
                 args.endpoint.as_deref().expect("clap endpoint"),
                 args.model.as_deref().expect("clap model"),
@@ -211,7 +227,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     if args.adapter_request {
         let request = reedline_ai::adapter::read_request(io::stdin().lock())?;
-        let response = reedline_ai::adapter::complete(request, backend.as_ref())?;
+        let response = reedline_ai::adapter::complete_with_memory(
+            request,
+            backend.as_ref(),
+            project_memory.as_ref(),
+        )?;
         println!("{}", serde_json::to_string(&response)?);
         return Ok(());
     }

@@ -209,7 +209,7 @@ impl Completer for AiCompleter {
                     ..Suggestion::default()
                 }])
             }
-            Outcome::Pending => CompletionResult::Pending,
+            Outcome::Pending | Outcome::Streaming(_) => CompletionResult::Pending,
             _ => CompletionResult::fresh(Vec::<Suggestion>::new()),
         }
     }
@@ -354,6 +354,11 @@ impl Hinter for AiHinter {
             return String::new();
         }
         match outcome {
+            Outcome::Streaming(text) if !text.is_empty() => {
+                // Do not publish an acceptance token for a partial command. Even
+                // Ctrl-F/word-complete must wait for the final validated result.
+                paint_hint(format!("{text} [receiving; not ready]"), use_ansi_coloring)
+            }
             Outcome::Ready(text) if !text.is_empty() => {
                 let result = format!("{line}{text}");
                 review_status(
@@ -541,6 +546,7 @@ impl Prompt for AiPrompt {
         }
         match self.engine.outcome() {
             Outcome::Pending => "completion pending".into(),
+            Outcome::Streaming(_) => "receiving · wait before accepting".into(),
             Outcome::Error(_) => "completion unavailable".into(),
             _ if self.network => "HTTP · no execution".into(),
             _ => "offline mock · no execution".into(),

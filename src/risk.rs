@@ -228,6 +228,7 @@ fn inspect(
         }
         "echo" | "printf" | "pwd" | "ls" | "dir" | "cat" | "head" | "tail" | "wc" | "true"
         | "false" | "cd" | "get-location" | "get-childitem" | "write-output" => {}
+        "set-location" if kind == ShellKind::PowerShell => {}
         _ => result.incomplete = true,
     }
 }
@@ -309,6 +310,14 @@ mod tests {
     }
     #[test]
     fn shell_specific_escaping_and_case() {
+        assert!(
+            !check(
+                ShellKind::PowerShell,
+                "Set-Location -LiteralPath 'C:/Synthetic/世界😀' -ErrorAction Stop"
+            )
+            .incomplete
+        );
+        assert!(check(ShellKind::Bash, "set-location anything").incomplete);
         for command in [
             "Remove-Item x",
             "r`m x",

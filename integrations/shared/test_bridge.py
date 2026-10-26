@@ -30,8 +30,11 @@ def response(r, insertion='界'):
 def process_running(pid):
     # Linux can retain a dead orphan as a zombie until PID 1 reaps it.
     status = Path(f'/proc/{pid}/stat')
-    if status.exists() and status.read_text().split()[2] == 'Z':
-        return False
+    try:
+        if status.exists() and status.read_text().split()[2] == 'Z':
+            return False
+    except (FileNotFoundError, ProcessLookupError):
+        return False  # The observed process exited between the probe and read.
     try:
         os.kill(pid, 0)
         return True
@@ -117,7 +120,7 @@ print(json.dumps(dict(protocol=1,request_id=r['request_id'],buffer=r['buffer'],c
         if os.name != 'nt': p.chmod(0o600)
         result = subprocess.run([sys.executable, str(Path(bridge.__file__)), '--run', str(p)], capture_output=True, timeout=3)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, b'ERROR\n')
+        self.assertEqual(result.stdout, ('ERROR' + os.linesep).encode('ascii'))
         self.assertNotIn(b'synthetic-secret', result.stderr)
         self.assertFalse(directory.exists())
 
@@ -171,7 +174,7 @@ print(json.dumps(dict(protocol=1,request_id=r['request_id'],buffer=r['buffer'],c
         try:
             result = subprocess.run([sys.executable, str(Path(bridge.__file__)), '--run', str(path)], capture_output=True, timeout=3)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, b'READY\n')
+            self.assertEqual(result.stdout, ('READY' + os.linesep).encode('ascii'))
             self.assertFalse(path.exists())
             frame = directory / 'response.frame'
             self.assertEqual(frame.read_text(), bridge.response_frame(r, response(r)))

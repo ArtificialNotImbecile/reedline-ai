@@ -1,6 +1,6 @@
 # Windows CMD: optional Clink adapter
 
-Status: **experimental, native Windows validation pending**. This is a Lua
+Status: **experimental; native validation passed on Windows 10.0.19045.3803 / Clink 1.9.35**. This is a Lua
 adapter for actual `cmd.exe` with **Clink installed separately**. Stock CMD has no
 supported equivalent editor-buffer API and is not supported by this adapter.
 The standalone Rust demonstration is not represented as CMD integration.
@@ -62,10 +62,14 @@ a buffer containing secrets. The adapter reads no history or repository files.
 Use these two-stroke sequences in Emacs or Vi insert mode. The second key is a
 plain **lowercase** letter, not Ctrl+letter:
 
-1. **Ctrl-X, g**: request one asynchronous suggestion.
+1. **Ctrl-X, q**: request one asynchronous suggestion.
 2. **Ctrl-X, p**: collect and display its preview, without inserting anything.
 3. **Ctrl-X, a**: insert that previously shown preview only if still current.
 4. **Ctrl-X, x**: discard pending/preview state without changing the line.
+
+Requests expire after 30 seconds; acceptance expires 15 seconds after the first
+preview (reopening the preview does not extend it). A clock reading earlier than
+the recorded request or first-preview time also invalidates the request. Request a fresh suggestion after expiration.
 
 Try `echo 世`; the mock result is `echo 世界`. Enter remains separate native CMD
 execution. No `accept-line`, `eval`, suggested command execution or synthetic
@@ -112,8 +116,9 @@ Only explicitly configured paths and opaque temporary paths reach CMD's launcher
 buffer, candidates, cwd and backend options are never interpolated there. Before
 spawning the backend, the helper joins a kill-on-close Windows Job Object so its
 exit cleans descendants. This is containment for a trusted backend, not a general
-sandbox. Native Windows ACL inheritance, Job behavior, terminal/Clink callbacks
-and Unicode editing have **not yet been exercised in this Linux environment**.
+sandbox. On the tested Windows host, helper termination and timeout cleaned
+backend descendants; native callbacks and Unicode editing passed. This does not
+establish cleanup when forcibly killing the entire CMD host.
 
 ## Disable and remove
 
@@ -134,7 +139,7 @@ reedline-ai.exe adapter uninstall --shell cmd --directory C:\Tools\reedline-ai-c
 Closing the session removes session-only injection/configuration. There is no
 registry/profile edit to undo from these instructions.
 
-## Validation and remaining native gate
+## Validation and remaining platform limits
 
 Portable tests currently cover the shared bridge's UTF-8/FIM/protocol/risk gates,
 output caps, timeout, safe stdin, private-file cleanup and POSIX process-tree
@@ -147,7 +152,10 @@ texlua integrations/cmd/test_adapter.lua
 ```
 
 The Lua test accepts an extracted script path as its first argument. These are
-not Windows/Clink native passes. Before relying on this integration, run the key
+not by themselves Windows/Clink native passes. The separate Windows run passed
+request/preview/accept, v2 replacement, Unicode, native Tab/history, preview
+expiry and disable. Entire-CMD-host force-kill and Windows Terminal GUI remain
+unvalidated. On other hosts, run the key
 flow in a real Windows CMD+Clink terminal, verify the private temporary-directory
 DACL and inherited files, test timeout/host-close process cleanup, and check
 Unicode middle insertion, undo, blank-zero requests, native Tab/history, Ctrl-C

@@ -1,4 +1,4 @@
-# Native shell bridge protocol v1
+# Native shell bridge protocols v1 and v2
 
 The standalone Reedline playground remains unchanged. Opt-in adapters call the same Rust backend without replacing the host shell or evaluating model output. `reedline-ai --adapter-request` consumes **one JSON object from stdin until EOF** and emits one JSON object to stdout, then exits. The caller must close stdin and enforce a wall-clock deadline. No JSON is passed through shell source or model-derived command arguments.
 
@@ -24,10 +24,43 @@ Response:
 
 Risk review always uses the conservative `confirm` rule in this protocol, even if `--risk-policy off` is passed. Warnings **or incomplete review** require an additional explicit gesture or are blocked by that adapter. `git` intentionally has incomplete review because hooks/aliases/config are unresolved. No warning is not a safety guarantee. Acceptance only changes the editor buffer; the user retains responsibility for execution via the host shell's normal Enter behavior.
 
-History/configuration import flags and explicit CLI shell override conflict with adapter mode. Existing backend options (`--backend http`, endpoint/model/provider, key environment variable, network opt-ins, timeout) remain available. Default is the offline deterministic mock. Backend HTTP timeout defaults to eight seconds and is bounded to 1–60 seconds; callers also need process and stale-result deadlines. No adapter enables HTTP automatically, reads native histories, or modifies profiles.
+History import flags and explicit CLI shell override conflict with adapter mode. Explicit configuration flags (`--config`, `--global-config`, `--project-config` with `--project-root`, `--local-config`) are accepted and remain local. Existing backend options (`--backend http`, endpoint/model/provider, key environment variable, network opt-ins, timeout) remain available. Default is the offline deterministic mock. Backend HTTP timeout defaults to eight seconds and is bounded to 1–60 seconds; callers also need process and stale-result deadlines. No adapter enables HTTP automatically, reads native histories, or modifies profiles.
 
 ## Privacy and lifecycle
 
 The current buffer and supplied shell metadata go to the selected provider only in explicitly configured HTTP mode. Do not invoke on secrets. Cwd stays local. An adapter may use private ephemeral transport files when its shell cannot safely exchange asynchronous stdin/stdout; its platform guide states this boundary. Nothing is written to native history by the adapter. Shell history may naturally record a command only when the user later executes it.
 
-The initial native adapters provide explicit-key completion, not automatically refreshed inline AI ghost text. They do not yet connect the prototype's local workflow replacement/memory commands. Native editing, completion and history continue to belong to each real host shell.
+The initial native adapters provide explicit-key completion, not automatically refreshed inline AI ghost text. Version 2 connects exact, confirmed local workflow phrases from explicitly selected configuration; it does not discover projects or learn from history. Native editing, completion and history continue to belong to each real host shell.
+
+## Version 2: explicit local whole-line workflows
+
+Version 1 is unchanged and insertion-only. Version 2 requests use the same fields
+with `protocol: 2`; replies must echo the requested version. Ordinary backend
+suggestions still obey the exact v1 insertion equations and limits. A matched
+confirmed workflow instead emits `replacement` (a string), empty `insertion`,
+`result == replacement`, and `result_cursor == UTF-8 byte length of replacement`.
+Replacement is a full-line edit, at most 8192 UTF-8 bytes, with the same control
+character/code-fence rejection as structured edits. A `replacement` field is
+forbidden in v1, including null or empty variants. A workflow match requested
+through v1 fails closed rather than becoming an insertion or an HTTP request.
+
+The native adapters request v2. Both transports validate the mutually exclusive
+replacement/insertion forms; Clink uses the `RLA2R` frame marker for replacements
+and retains the `RLA1` insertion frame. Request identity, complete original
+buffer, original cursor, current directory, selection, generation, cancellation
+and expiry gates still apply. Acceptance changes the buffer in one edit only;
+it never sends Enter. PowerShell converts the accepted full line to UTF-16 editor
+indices; the wire cursor remains UTF-8. Risk review cannot be disabled by CLI flags.
+
+Only explicit configuration is loaded, with existing global → project → personal
+→ explicit override precedence. No cwd-based discovery, filesystem scan, raw
+history, unconfirmed memory or implicit environment activation is added. The
+configured workflow result stays local and skips the backend entirely. A phrase
+not matching a confirmed workflow follows ordinary completion; memory and cwd
+are not included in its provider context. Protocol v2 does not add provider-driven
+rewrites or natural-language path discovery.
+
+For now pass config flags through the documented adapter backend-argument array,
+for example Bash: `REEDLINE_AI_ARGS=(--backend mock --config /absolute/path/memory.json)`
+before sourcing the adapter. Use absolute paths so changing directories cannot
+select a different configuration. `init` does not yet persist workflow settings.

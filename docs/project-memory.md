@@ -127,3 +127,26 @@ An explicit recipe is one step, for example `{"action":"shell","shell":"bash","c
 Rust unit/integration tests cover all four dialect renderings, rejected values, structured Unicode edits, protocol/CRUD/layers, no-request blank input, and actual Reedline replacement/stale guards. Harmless synthetic Bash syntax/literal roundtrips run through Bash. PowerShell, CMD and Nushell runtime execution are not claimed verified here; generated syntax tests are not native-shell integration tests.
 
 Language design references: [Bash quoting](https://www.gnu.org/software/bash/manual/html_node/Quoting.html), [PowerShell quoting](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules), [PowerShell native argument parsing](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing), [PowerShell chaining equivalence](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pipeline_chain_operators), [Nushell strings](https://www.nushell.sh/book/working_with_strings.html), [Nushell 0.98 error behavior](https://www.nushell.sh/blog/2024-09-17-nushell_0_98_0.html), [Conda run](https://docs.conda.io/projects/conda/en/26.3.x/commands/run.html).
+
+## Native adapters (protocol v2)
+
+Native adapters can resolve the same **exact confirmed workflow phrases** when
+configuration flags are explicitly supplied in their backend argument array.
+For Bash, for example, set
+`REEDLINE_AI_ARGS=(--backend mock --config /absolute/path/memory.json)` before
+sourcing the adapter. Other adapters use their documented backend-arguments
+setting. The existing explicit layer precedence is unchanged. Use absolute config
+paths; there is no search based on the current directory, scanning, or history
+learning. `init` does not persist these workflow flags yet.
+
+A match produces a local whole-line preview, with no provider request. An unmatched
+phrase retains ordinary completion; configured memory and cwd are never appended
+to provider context. The actual current command buffer is still sent if HTTP
+completion was explicitly enabled, so do not request completion on secrets.
+
+Acceptance never executes. Conservative risk review still applies: Bash supports
+a separate risk acknowledgment; PowerShell, Nushell and CMD currently **block**
+workflows with warnings or incomplete review (including many multi-step or unknown
+commands). Configuration is not a way to bypass this gate. These adapters may
+therefore preview but refuse to insert some configured recipes. There is no
+implicit environment activation or arbitrary natural-language path discovery.

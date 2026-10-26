@@ -37,6 +37,25 @@ with tempfile.TemporaryDirectory(prefix='reedline-ai-pwsh-pty-') as temporary:
     snapshot = directory / 'snapshot.json'
     ready = directory / 'ready'
     disabled = directory / 'disabled'
+    memory = directory / 'memory.json'
+    memory.write_text(json.dumps({'version': 1, 'confirmed': {'CCTV': {
+        'path': str(directory / '世界🦀'), 'workflows': {'run': {
+            'steps': [{'action': 'change_directory'}]}}}}, 'suggestions': []}))
+    memory.chmod(0o600)
+    fixture = directory / 'safe-replacement-fixture'
+    fixture.write_text(f'''#!{sys.executable}
+import json, subprocess, sys
+raw = sys.stdin.read()
+r = json.loads(raw)
+if r['buffer'] == 'fixture replacement':
+    text = 'echo 世界🦀'
+    print(json.dumps(dict(protocol=r['protocol'], request_id=r['request_id'], buffer=r['buffer'], cursor=r['cursor'], insertion='', replacement=text, result=text, result_cursor=len(text.encode()), risk_review=dict(warnings=[], incomplete=False), additional_acceptance_required=False)))
+else:
+    p = subprocess.run([{BINARY!r}] + sys.argv[1:], input=raw, text=True, capture_output=True)
+    sys.stdout.write(p.stdout)
+    sys.exit(p.returncode)
+''')
+    fixture.chmod(0o700)
     setup = directory / 'setup.ps1'
     setup.write_text(f"""
 $ErrorActionPreference = 'Stop'
@@ -44,7 +63,7 @@ Import-Module PSReadLine
 Set-PSReadLineOption -EditMode Emacs -PredictionSource None -HistorySaveStyle SaveNothing
 function global:prompt {{ 'PS_TEST> ' }}
 Import-Module {quote(MODULE)}
-Enable-ReedlineAI -Binary {quote(BINARY)} -RequestChord F6 -AcceptChord F7 -CancelChord F8
+Enable-ReedlineAI -Binary {quote(fixture)} -BackendArguments @('--backend', 'mock', '--config', {quote(memory)}) -RequestChord F6 -AcceptChord F7 -CancelChord F8
 Set-PSReadLineKeyHandler -Chord 'F12' -ScriptBlock {{
     $line = ''; $cursor = 0
     [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
@@ -118,6 +137,17 @@ Set-PSReadLineKeyHandler -Chord 'F12' -ScriptBlock {{
         line('')
         send(REQUEST)
         assert state()['buffer'] == ''
+        preview('run CCTV')
+        send(ACCEPT)
+        assert state()['buffer'] == 'run CCTV'  # Unknown Set-Location review remains blocked.
+        preview('fixture replacement')
+        send(ACCEPT)
+        actual = state()
+        assert actual == {'buffer': 'echo 世界🦀', 'cursor': 9}, (actual, bytes(transcript[-6000:]))
+        send(ACCEPT)
+        assert state() == actual
+        send(b'\x18\x15')
+        assert state()['buffer'] == 'fixture replacement'  # Whole-line edit is undoable, never submitted.
         preview('echo 世')
         assert 'Preview: echo 世界'.encode() in transcript
         send(ACCEPT)

@@ -51,6 +51,34 @@ class PureNuTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('PASS', result.stdout)
 
+    def test_expiry_and_backward_clock_fail_closed(self):
+        result = self.run_nu("""let now = date now
+        let pending = {created_at: $now, previewed_at: null, ready: null}
+        if not (reedline-ai-state-fresh $pending) { error make {msg: 'fresh pending rejected'} }
+        for bad in [($pending | upsert created_at ($now - 31sec)) ($pending | upsert created_at ($now + 1min)) ($pending | reject created_at)] {
+            if (reedline-ai-state-fresh $bad) { error make {msg: 'expired pending accepted'} }
+        }
+        let preview = {created_at: ($now - 20sec), previewed_at: $now, ready: {result: test}}
+        if not (reedline-ai-state-fresh $preview) { error make {msg: 'fresh preview rejected'} }
+        for bad in [($preview | upsert created_at ($now - 31sec)) ($preview | upsert previewed_at ($now - 16sec)) ($preview | upsert previewed_at ($now + 1min))] {
+            if (reedline-ai-state-fresh $bad) { error make {msg: 'expired preview accepted'} }
+        }
+        print PASS""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_v2_replacement(self):
+        result = self.run_nu("""let r = {protocol: 2, request_id: x, buffer: 'run CCTV', cursor: 8}
+        let text = 'cd "世界"'
+        let s = {protocol: 2, request_id: x, buffer: 'run CCTV', cursor: 8, insertion: '', replacement: $text, result: $text, result_cursor: ($text | str length --utf-8-bytes), additional_acceptance_required: false, risk_review: {warnings: [], incomplete: false}}
+        if not (reedline-ai-check-response $r $s) { error make {msg: 'v2 replacement rejected'} }
+        for bad in [($s | upsert protocol 1) ($s | upsert insertion x) ($s | upsert replacement null) ($s | upsert result other) ($s | upsert result_cursor 1) ($s | upsert replacement 'a```b')] {
+            if (reedline-ai-check-response $r $bad) { error make {msg: 'unsafe replacement accepted'} }
+        }
+        if (reedline-ai-check-response ($r | upsert protocol 1) ($s | upsert protocol 1)) { error make {msg: 'v1 replacement accepted'} }
+        print PASS""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS', result.stdout)
+
 
 @unittest.skipUnless(NU and os.name == 'posix', 'Real native test needs Nushell and POSIX PTY')
 class NativeNuTests(unittest.TestCase):
@@ -74,7 +102,8 @@ if r['buffer'].startswith('slow '): time.sleep(.8)
 if r['buffer'].startswith('timeout '): time.sleep(30)
 i='界' if '世' in r['buffer'] else 'status'
 b=r['buffer'].encode(); c=r['cursor']
-s=dict(protocol=1,request_id=r['request_id'],buffer=r['buffer'],cursor=c,insertion=i,result=(b[:c]+i.encode()+b[c:]).decode(),result_cursor=c+len(i.encode()),additional_acceptance_required=False,risk_review=dict(incomplete=False,warnings=[]))
+s=dict(protocol=r['protocol'],request_id=r['request_id'],buffer=r['buffer'],cursor=c,insertion=i,result=(b[:c]+i.encode()+b[c:]).decode(),result_cursor=c+len(i.encode()),additional_acceptance_required=False,risk_review=dict(incomplete=False,warnings=[]))
+if r['buffer'] == 'run CCTV': s.update(insertion='',replacement='cd 世界',result='cd 世界',result_cursor=len('cd 世界'.encode()))
 if r['buffer'].startswith('risk '): s['risk_review']['incomplete']=True
 if r['buffer'].startswith('malformed '): s['request_id']='wrong'
 if r['buffer'].startswith('flood '): print('x' * 1000000); raise SystemExit(0)
@@ -89,6 +118,8 @@ $env.PROMPT_COMMAND = {{|| 'NU> '}}
 $env.PROMPT_COMMAND_RIGHT = {{|| ''}}
 reedline-ai-enable
 $env.config.keybindings ++= [{{name: inspect_test, modifier: control_alt, keycode: char_q, mode: [emacs], event: {{send: executehostcommand, cmd: 'print $"SNAP:(commandline | to json --raw):(commandline get-cursor)"; $env.REEDLINE_AI_HOST_EVENT = true'}}}}]
+$env.config.keybindings ++= [{{name: expire_test, modifier: control_alt, keycode: char_e, mode: [emacs], event: {{send: executehostcommand, cmd: '$env.REEDLINE_AI_STATE = ($env.REEDLINE_AI_STATE | upsert created_at ((date now) - 40sec) | upsert previewed_at ((date now) - 16sec)); $env.REEDLINE_AI_HOST_EVENT = true'}}}}]
+
 ''')
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 0, 0))
@@ -171,6 +202,24 @@ $env.config.keybindings ++= [{{name: inspect_test, modifier: control_alt, keycod
         self.assertEqual(self.snapshot(), ('git status --short', 10))
         self.assertEqual(self.count_requests(), 1)
 
+    def test_expired_preview_cannot_accept_or_refresh(self):
+        self.send('run CCTV'); self.key('request', .4); self.key('preview')
+        self.send(b'\x1b\x05')  # Test-only clock aging, no wait or real clock changes.
+        self.key('preview'); self.key('accept')
+        self.assertEqual(self.snapshot(), ('run CCTV', 8))
+        self.assertIn(b'expired', self.transcript)
+
+    def test_v2_replacement_preview_accept_and_stale_edit(self):
+        self.send('run CCTV'); self.key('request', .4); self.key('accept')
+        self.assertEqual(self.snapshot(), ('run CCTV', 8))
+        self.key('preview'); self.key('accept')
+        self.assertEqual(self.snapshot(), ('cd 世界', 5))
+        self.key('accept')
+        self.assertEqual(self.snapshot(), ('cd 世界', 5))
+        self.send(b'\x03'); self.send('run CCTV'); self.key('request', .4); self.key('preview')
+        self.send('x'); self.key('accept')
+        self.assertEqual(self.snapshot(), ('run CCTVx', 9))
+
     def test_unicode_middle_byte_conversion(self):
         self.send('echo 世 suffix'); self.send(b'\x01' + b'\x1b[C' * 6)
         self.key('request', .4); self.key('preview'); self.key('accept')
@@ -194,7 +243,12 @@ $env.config.keybindings ++= [{{name: inspect_test, modifier: control_alt, keycod
         self.assertEqual(self.snapshot(), ('slow edited', 11))
 
     def test_cancel_keeps_single_draining_worker(self):
-        self.send('slow '); self.key('request', .15); self.key('cancel', .15)
+        self.send('slow '); self.key('request', .05)
+        deadline = time.monotonic() + 3
+        while not self.pidfile.exists() and time.monotonic() < deadline:
+            self.pump(.02)
+        self.assertTrue(self.pidfile.exists(), 'fixture did not start')
+        self.key('cancel', .05)
         self.key('request', .15)
         self.assertEqual(self.count_requests(), 1)
         self.assertIn(b'one bounded request is still draining', self.transcript)

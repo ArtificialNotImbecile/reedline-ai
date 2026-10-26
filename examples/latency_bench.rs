@@ -298,6 +298,7 @@ fn error_kind(error: &BackendError) -> &'static str {
     match error {
         BackendError::Config(_) => "configuration",
         BackendError::Transport => "transport_or_timeout",
+        BackendError::Cancelled => "cancelled",
         BackendError::Status(_) => "provider_status",
         BackendError::BodyTooLarge => "response_size_limit",
         BackendError::InvalidResponse => "invalid_response",

@@ -15,7 +15,7 @@ $suffix = $utf8.GetString($bytes, $request.cursor, $bytes.Length - $request.curs
 $insertion = '世界'
 if ($Literal) { $insertion = $Literal }
 $reply = @{
-    protocol = 1; request_id = $request.request_id; buffer = $request.buffer; cursor = $request.cursor
+    protocol = $request.protocol; request_id = $request.request_id; buffer = $request.buffer; cursor = $request.cursor
     insertion = $insertion; result = $prefix + $insertion + $suffix
     result_cursor = $request.cursor + $utf8.GetByteCount($insertion)
     risk_review = @{ warnings = @(); incomplete = $false }; additional_acceptance_required = $false

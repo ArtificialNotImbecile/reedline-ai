@@ -52,7 +52,7 @@ See the separate [15-request synthetic latency report](latency-benchmark.md). Th
 
 The initial published commit `459b8747ae6b7b605826b3f24f635ba6c0d65b44` passed [hosted checks on Linux, macOS and Windows](https://github.com/ArtificialNotImbecile/reedline-ai/actions/runs/39926660746), including Linux PTY smoke, on 2026-10-23. Hosted CI is now manual-only (`workflow_dispatch`), with no push or pull-request trigger. Routine validation uses `bash scripts/ci-local.sh` on Linux/macOS, without starting hosted workflows or calling remote model APIs. A local pass verifies that host only; it does not establish a new cross-platform result.
 
-Known limitations remain intentional: no automatic command execution, no universal inline shell predictor, no native FIM-token adapter, no streaming or active HTTP cancellation, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
+Known limitations remain intentional: no automatic command execution, no universal inline shell predictor, no native FIM-token adapter, native bridge/mobile final-only display, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
 
 Independent review found two bugs in the first draft: raw pasted controls could reach default ANSI rendering before validation, and Reedline input batching could accept stale or repeated hints. The iteration introduced pre-render input filtering and input-ordered, one-shot rendered-hint acceptance, with dedicated Rust and PTY regression coverage. This record describes checks, not a formal security certification.
 
@@ -171,3 +171,5 @@ cancel key; its descendant cleanup is best-effort. Nu job APIs are experimental.
 PS/Nu/CMD block every risky or incomplete review rather than offering Bash's
 extra acknowledgment path. No paid provider call, fresh DS latency claim, hosted
 CI run, actual SSH session or cross-platform binary release is implied.
+
+Standalone incremental SSE preview and active local HTTP cancellation are now covered by `tests/http_streaming.rs`, `scripts/pty_streaming.py` and the cancellation tests. See [streaming boundaries](streaming.md) and [cancellation boundaries](http-cancellation.md); no paid API is used for these checks.

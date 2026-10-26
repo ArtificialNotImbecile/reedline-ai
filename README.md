@@ -6,15 +6,31 @@ A small Rust playground for asynchronous suffix and cursor-aware infill completi
 
 > 当前是可运行的 MVP，不是 shell 替代品。按 Enter 只显示接受的文本，不会执行命令。默认使用确定性的离线 mock，不联网，也不需要 API key。
 
+## 简单设置与安装（推荐）
+
+已有可执行程序后，运行 `reedline-ai setup`，按提示填写 **Base URL、模型名、API key（隐藏输入）**。只使用 OpenAI-compatible chat completions 协议，不用选厂商。设置本身不调用 API；保存 key 前会说明本地未加密存储并要求确认，也可留空、仅使用环境变量。
+
+```bash
+# Bash：仅启用当前会话；不修改 .bashrc
+eval "$(reedline-ai init --shell bash)"
+```
+
+```powershell
+# PowerShell 7：仅启用当前会话
+Invoke-Expression (& reedline-ai init --shell powershell | Out-String)
+```
+
+未配置时走离线 mock；配置后上述启用命令明确选用 HTTP，只有按请求快捷键才发送当前命令。按接受键只写入命令行，不替你按 Enter。plain `reedline-ai` 仍是离线独立演示。详见 [设置、快捷键和卸载](docs/install.md)；Linux 免 Rust 编译包的安装方式见 [Linux package](docs/linux-release.md)。已实测 Windows 10.0.19045.3803 的 PowerShell 7.6.5 与 Clink 1.9.35；不是全 Windows 兼容性保证。Windows Nu、受支持版本 Bash 交互、整个 CMD 宿主强杀及 Windows Terminal GUI 尚未验证；详见 [实测边界](docs/install.md#windows-validation-scope-2026-10-26)。
+
 ## Native shell integration (opt-in)
 
 The standalone demo is not your shell. The native adapters instead keep the existing shell editor, history and completion, and call the shared Rust backend only through explicit keys. They insert accepted text into the current line and never press Enter or execute it. The host shell still executes normally if you subsequently press Enter.
 
-Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. PowerShell, Nushell and CMD+Clink packages require explicit `--experimental` extraction. See [PowerShell](docs/powershell-adapter.md), [Nushell](docs/nushell-adapter.md), and [CMD+Clink](docs/cmd-adapter.md) for actual runtime coverage and limits; Windows/Clink is not claimed tested.
+Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. Advanced extraction for PowerShell, Nushell and CMD+Clink requires `--experimental`; one-line PowerShell init prints the experimental warning. See [PowerShell](docs/powershell-adapter.md), [Nushell](docs/nushell-adapter.md), and [CMD+Clink](docs/cmd-adapter.md) for actual runtime coverage and limits; Windows/Clink validation applies only to the host versions and limits recorded in the installation guide.
 
 ## Shell-aware workflows and editable local memory
 
-The standalone prototype now supports explicit target-shell context, exact configured workflow phrases such as `run CCTV`, and previewable whole-line replacements. It is still **not a shell plugin** and never executes commands. Native Reedline history and keys remain first priority; Tab previews complex replacements, Enter accepts only.
+The standalone prototype now supports explicit target-shell context, exact configured workflow phrases such as `run CCTV`, and previewable whole-line replacements. This standalone entry point never executes commands; opt-in native adapters are documented separately. Native Reedline history and keys remain first priority; Tab previews complex replacements, Enter accepts only.
 
 ```sh
 cargo run --locked -- suggest --shell cmd --buffer 'ls'
@@ -155,7 +171,7 @@ cargo run --locked -- --help
 
 - 默认 mock 不发出网络请求。HTTP 模式会在你停止编辑约 180 ms 后自动发送**当前行的 prefix/suffix**，包括行内可能存在的敏感内容；请勿输入秘密。显式提供的 shell 类型、版本、命令/alias 信息也会加入请求。空白行不请求 AI。请求还包含固定系统提示、模型名及生成参数。
 - 历史默认仅用于本地匹配；仅 `--ai-history` 允许筛选历史进入 prompt。不会自动采集工作目录、任意文件、剪贴板或环境变量；只读取显式选择的历史和项目配置文件。配置文件本身不上传，但接受工作流后展开的路径/命令成为当前输入，在明确启用的 HTTP 模式下可能随后发送。HTTP 模式读取指定 API key；显式网络选项可读取代理/CA 配置用于传输，不作为 prompt。
-- 不记录请求正文、API key 或原始错误响应。失败信息经过脱敏。模型 API key 只用于该 endpoint 的 Authorization header，不保存到磁盘；这不是内存清零或防止本机管理员读取进程的保证。
+- 不记录请求正文、API key 或原始错误响应。失败信息经过脱敏。模型 API key 只用于该 endpoint 的 Authorization header；显式 setup 并确认后可未加密保存到本地私有设置，环境变量模式不保存；这不是内存清零或防止本机管理员读取进程的保证。
 - 禁止 HTTP 重定向和请求重试，禁止带凭据/query/fragment 的 endpoint URL。远端只允许 HTTPS，明文 HTTP 仅允许 loopback。代理和平台 CA 必须分别显式 opt-in。
 - 当前行最多 8 KiB，AI 插入文本最多 1 KiB，响应体最多 64 KiB；模型输出最多 128 tokens。请求另受上面的保守总预算约束。本地历史提示不是模型输出，仍按安全的 8 KiB 单行边界处理。超限拒绝，不偷偷截断。终端控制字符、换行、部分不可见控制和 Markdown 代码围栏会被拒绝。
 - 一个后台 worker：最多 1 个进行中的请求 + 1 个可替换等待项。没有自动重试。超时默认 8 秒；这不是总费用预算，持续使用远端服务仍可能计费。
@@ -231,10 +247,10 @@ GitHub Actions 仅保留手动 `workflow_dispatch`：push 和 pull request 不�
 
 ## 当前限制与后续方向
 
-- 不是 bash/zsh/fish/Nushell 集成，也没有 shell parser、命令执行或执行权限层。
-- 仅支持单行补全；没有 streaming、原生 FIM adapter、语义安全分类器或跨文件上下文。
-- 网络请求无法主动中止，只能丢弃过期结果并等待超时；没有自动限流恢复或供应商费用预算。
-- 后续可评估原生 FIM 后端、可取消异步传输、真实终端跨平台回归，以及 opt-in shell 集成。先保持“只建议、不执行”的边界。
+- 独立演示不是 shell；已有显式 Bash/PowerShell/Nushell/CMD+Clink 适配器（平台状态见安装说明），仍没有 shell parser 或执行权限层。
+- 仅支持单行补全；独立桌面支持 [SSE 流式预览](docs/streaming.md)，接收中不可接受，完整校验后才可插入；原生 shell 桥接/mobile 仍只显示完整结果。没有原生 FIM adapter、语义安全分类器或跨文件上下文。
+- 内置 HTTP 后端支持[本地请求取消](docs/http-cancellation.md)，不保证供应商停止处理或计费；没有自动限流恢复或供应商费用预算。
+- 后续可评估原生 FIM 后端、真实终端跨平台回归，以及 opt-in shell 集成。先保持“只建议、不执行”的边界。
 
 ## 许可
 

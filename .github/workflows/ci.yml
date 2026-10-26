@@ -25,3 +25,8 @@ jobs:
       - name: Interactive PTY smoke test (Linux)
         if: runner.os == 'Linux'
         run: python3 scripts/pty_smoke.py
+      - name: Adapter v1/v2 protocol contracts
+        run: python3 tests/adapter_v2_contract.py
+      - name: Native Bash adapter PTY contracts (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/pty_bash_adapter.py

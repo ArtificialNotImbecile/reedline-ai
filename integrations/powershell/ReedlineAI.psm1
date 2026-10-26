@@ -44,18 +44,28 @@ function ConvertFrom-ReedlineAiReply([string]$Json, $Snapshot) {
     foreach ($name in @('request_id', 'buffer', 'insertion', 'result')) {
         if ($reply[$name] -isnot [string]) { throw 'Invalid text.' }
     }
-    if ($reply.protocol -ne 1 -or
+    $protocol = if ($Snapshot.PSObject.Properties['Protocol']) { $Snapshot.Protocol } else { 1 }
+    if ($protocol -notin @(1, 2) -or $reply.protocol -ne $protocol -or
         -not [string]::Equals($reply.request_id, $Snapshot.RequestId, [StringComparison]::Ordinal) -or
         -not [string]::Equals($reply.buffer, $Snapshot.Buffer, [StringComparison]::Ordinal) -or
         $reply.cursor -ne $Snapshot.ByteCursor) { throw 'Stale reply.' }
     if (-not [ReedlineAi.PowerShellAdapterV1.Text]::Valid($reply.insertion, 1024) -or
         $reply.insertion.Contains('```') -or
         -not [ReedlineAi.PowerShellAdapterV1.Text]::Valid($reply.result, 9216)) { throw 'Unsafe reply.' }
-    $expected = $Snapshot.Buffer.Insert($Snapshot.Cursor, $reply.insertion)
-    $expectedCursor = [ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor(
-        $expected, $Snapshot.Cursor + $reply.insertion.Length)
+    if ($reply.Contains('replacement')) {
+        if ($protocol -ne 2 -or $reply.replacement -isnot [string] -or
+            $reply.insertion -cne '' -or
+            -not [ReedlineAi.PowerShellAdapterV1.Text]::Valid($reply.replacement, 8192) -or
+            $reply.replacement.Contains('```')) { throw 'Invalid replacement.' }
+        $expected = $reply.replacement
+        $expectedCursor = [ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor($expected, $expected.Length)
+    } else {
+        $expected = $Snapshot.Buffer.Insert($Snapshot.Cursor, $reply.insertion)
+        $expectedCursor = [ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor(
+            $expected, $Snapshot.Cursor + $reply.insertion.Length)
+    }
     if (-not [string]::Equals($reply.result, $expected, [StringComparison]::Ordinal) -or
-        $reply.result_cursor -ne $expectedCursor) { throw 'Non-insertion reply.' }
+        $reply.result_cursor -ne $expectedCursor) { throw 'Invalid edit reply.' }
     if ($reply.additional_acceptance_required -isnot [bool] -or
         $reply.risk_review -isnot [System.Collections.IDictionary] -or
         -not $reply.risk_review.Contains('incomplete') -or
@@ -105,12 +115,13 @@ function Invoke-ReedlineAiRequest {
                 return
             }
             $reply = ConvertFrom-ReedlineAiReply $response.Output $pending
-            if ([string]::IsNullOrEmpty($reply.insertion)) {
+            if ([string]::IsNullOrEmpty($reply.insertion) -and -not $reply.Contains('replacement')) {
                 Write-ReedlineAiStatus 'No suggestion. Input is unchanged.'
                 return
             }
             $script:Preview = [pscustomobject]@{
                 Snapshot = $pending; Insertion = $reply.insertion; Result = $reply.result
+                IsReplacement = $reply.Contains('replacement')
                 ExpiresAt = [Environment]::TickCount64 + 15000
             }
             Write-ReedlineAiStatus ("Preview: " + $reply.result + "`nAccept text only: " + $script:Configuration.AcceptChord)
@@ -125,7 +136,7 @@ function Invoke-ReedlineAiRequest {
         $byteCursor = [ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor($state.Buffer, $state.Cursor)
         $requestId = [guid]::NewGuid().ToString('N')
         $request = @{
-            protocol = 1; request_id = $requestId
+            protocol = 2; request_id = $requestId
             shell = @{ kind = 'powershell'; version = $PSVersionTable.PSVersion.ToString() }
             cwd = $state.Cwd; buffer = $state.Buffer; cursor = $byteCursor
         } | ConvertTo-Json -Depth 4 -Compress
@@ -134,7 +145,7 @@ function Invoke-ReedlineAiRequest {
             $state.Cwd, $request, $script:Configuration.TimeoutMilliseconds)
         $script:Pending = [pscustomobject]@{
             Buffer = $state.Buffer; Cursor = $state.Cursor; ByteCursor = $byteCursor
-            Cwd = $state.Cwd; RequestId = $requestId; Job = $job; Cancelled = $false
+            Protocol = 2; Cwd = $state.Cwd; RequestId = $requestId; Job = $job; Cancelled = $false
             ExpiresAt = [Environment]::TickCount64 + $script:Configuration.TimeoutMilliseconds + 15000
         }
         Write-ReedlineAiStatus 'Requested. Keep editing; press the request key again to preview when ready.'
@@ -146,6 +157,11 @@ function Invoke-ReedlineAiRequest {
 
 function Add-ReedlineAiText([string]$Text) {
     [Microsoft.PowerShell.PSConsoleReadLine]::Insert($Text)
+}
+
+function Set-ReedlineAiText([int]$Length, [string]$Text) {
+    [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $Length, $Text)
+    [Microsoft.PowerShell.PSConsoleReadLine]::SetCursorPosition($Text.Length)
 }
 
 function Accept-ReedlineAiSuggestion {
@@ -161,7 +177,11 @@ function Accept-ReedlineAiSuggestion {
         }
         # Insert supports PSReadLine undo/redo and preserves the suffix. There is
         # deliberately no AcceptLine, evaluation, prompt submission, or history API.
-        Add-ReedlineAiText $preview.Insertion
+        if ($preview.IsReplacement) {
+            Set-ReedlineAiText $state.Buffer.Length $preview.Result
+        } else {
+            Add-ReedlineAiText $preview.Insertion
+        }
     } catch {
         Write-ReedlineAiStatus 'Suggestion could not be inserted.'
     }

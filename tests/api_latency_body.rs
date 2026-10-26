@@ -3,7 +3,7 @@ use std::process::Command;
 
 #[test]
 fn diagnostic_product_body_matches_public_rust_builder() {
-    let output = Command::new("python3")
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .args(["-c", "import sys,json; sys.path.insert(0, 'scripts'); import api_latency_segments as b; print(json.dumps(b.product_body()))"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

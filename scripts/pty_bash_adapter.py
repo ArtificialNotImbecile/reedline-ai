@@ -49,10 +49,12 @@ insert = config.get("insert", "fixture")
 source = request["buffer"].encode()
 cursor = request["cursor"]
 result = (source[:cursor] + insert.encode() + source[cursor:]).decode()
-response = dict(protocol=1, request_id=request["request_id"], buffer=request["buffer"], cursor=cursor,
+response = dict(protocol=request["protocol"], request_id=request["request_id"], buffer=request["buffer"], cursor=cursor,
     insertion=insert, result=result, result_cursor=cursor + len(insert.encode()),
     risk_review=dict(warnings=config.get("warnings", []), incomplete=config.get("incomplete", False)),
     additional_acceptance_required=config.get("risk", False))
+if "replacement" in config:
+    response.update(replacement=config["replacement"], insertion="", result=config["replacement"], result_cursor=len(config["replacement"].encode()))
 if mode == "wrong-id": response["request_id"] = "another-request"
 if mode == "wrong-cursor": response["result_cursor"] = cursor + 1
 if mode == "wrong-result": response["result"] = "not an insertion"
@@ -203,8 +205,11 @@ def bridge_cases(shell: Shell):
     ]
     for config, expected in cases:
         shell.configure(**config)
-        proc = subprocess.run([sys.executable, str(bridge), "0.15", "--", sys.executable, str(shell.fixture)],
-                              input=request, capture_output=True, env=env, timeout=2)
+        # Only the dedicated deadline case uses a short limit. Other cases test
+        # parsing, not Python startup speed on a concurrently loaded machine.
+        limit = "0.15" if expected == "timeout" else "2"
+        proc = subprocess.run([sys.executable, str(bridge), limit, "--", sys.executable, str(shell.fixture)],
+                              input=request, capture_output=True, env=env, timeout=4)
         assert proc.stdout.split(b"\0")[0].decode() == expected, (config, proc.stdout, proc.stderr)
         assert b"private backend failure" not in proc.stdout + proc.stderr
     before = len(shell.calls())
@@ -271,6 +276,14 @@ def main():
             shell.send(CONFIRM)
             shell.send(ACCEPT)
             assert shell.snapshot()[:2] == ("git status", 10)
+            # Explicit local config reaches the native adapter without any provider.
+            memory = shlex.quote(str(ROOT / 'examples/project-memory.synthetic.json'))
+            shell.command(f"REEDLINE_AI_ARGS=(--backend mock --config {memory})")
+            shell.ready_preview("启动监控")
+            shell.send(CONFIRM)
+            shell.send(ACCEPT)
+            assert shell.snapshot()[0] == "cd -- '/synthetic/projects/cctv' && 'python' 'app.py'"
+            shell.command("REEDLINE_AI_ARGS=(--backend mock)")
             shell.fixture_backend()
             before = len(shell.calls())
             shell.line("cat completion_uni")
@@ -298,6 +311,33 @@ def main():
             assert shell.calls()[-1]["cursor"] == 8
             assert shell.calls()[-1]["shell"]["kind"] == "bash"
             assert shell.calls()[-1]["cwd"] == str(folder)
+            # V2 whole-line edits use the same preview, stale and confirmation gates.
+            shell.configure(replacement="echo 世界😀")
+            shell.ready_preview("启动监控")
+            shell.send(ACCEPT)
+            assert shell.snapshot()[:2] == ("echo 世界😀", 8)
+            shell.configure(replacement="echo replacement", warnings=["Synthetic risk"])
+            shell.ready_preview("启动监控")
+            shell.send(ACCEPT)
+            assert shell.snapshot()[0] == "启动监控"
+            shell.send(CONFIRM)
+            shell.send("x")
+            shell.send(ACCEPT)
+            assert shell.snapshot()[0] == "启动监控x"
+            shell.ready_preview("启动监控")
+            shell.send(CONFIRM)
+            shell.send(ACCEPT)
+            assert shell.snapshot()[0] == "echo replacement"
+            # Expiry and rollback are checked again at confirmation/acceptance.
+            for mutation in ["__rai_created=$((SECONDS-30))", "__rai_preview_time=$((SECONDS-15))", "__rai_preview_time=$((SECONDS+5))"]:
+                shell.command("__rai_test_expire() { " + mutation + "; }; bind -x '\"\\C-x\\C-e\":__rai_test_expire'")
+                shell.configure(replacement="echo replacement", warnings=["Synthetic risk"])
+                shell.ready_preview("启动监控")
+                shell.send(CONFIRM)
+                shell.send(b"\x18\x05")
+                shell.send(CONFIRM)
+                shell.send(ACCEPT)
+                assert shell.snapshot()[0] == "启动监控", mutation
             # Model punctuation is data, including substitutions and quote breaks.
             marker = folder / "MUST_NOT_EXIST"
             insertion = f'"; $(touch {marker}); `touch {marker}`; echo "'
