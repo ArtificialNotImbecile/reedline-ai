@@ -34,4 +34,4 @@ with tempfile.TemporaryDirectory(prefix="reedline-installed-nu-") as temporary:
                     "--directory", str(assets)], cwd=home, env=env, check=True)
     assert not assets.exists()
     assert not (home / ".config/nushell/config.nu").exists()
-    print("Installed Nushell PASS: clean-HOME offline install, doctor, bundled native adapter/helper, real mock/PTY/disable, uninstall. Linux only; experimental limits remain.")
+    print("Installed Nushell PASS: clean-HOME offline install, doctor, bundled native adapter/helper, real mock/PTY/disable, uninstall. POSIX host only; Windows terminal validation remains separate.")

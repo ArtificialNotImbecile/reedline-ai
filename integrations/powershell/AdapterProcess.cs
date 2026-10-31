@@ -18,7 +18,7 @@ namespace ReedlineAi.PowerShellAdapterV1
     {
         private static int active;
         private readonly TaskCompletionSource<bool> cancelled =
-            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            new TaskCompletionSource<bool>(TaskCreationOptions.None);
         public Task<Reply> Completion { get; private set; }
 
         private Job() { }
@@ -69,19 +69,21 @@ namespace ReedlineAi.PowerShellAdapterV1
                         RedirectStandardInput = true,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
-                        StandardInputEncoding = encoding,
                         StandardOutputEncoding = encoding,
                         StandardErrorEncoding = encoding
                     };
-                    foreach (var argument in arguments) start.ArgumentList.Add(argument);
+                    ConfigureArguments(start, arguments);
+                    // StandardInputEncoding is absent on older .NET Framework.
+                    var inputEncoding = typeof(ProcessStartInfo).GetProperty("StandardInputEncoding");
+                    if (inputEncoding != null) inputEncoding.SetValue(start, encoding, null);
                     process.StartInfo = start;
                     if (cancelled.Task.IsCompleted) return Result("cancelled");
                     var timeout = Task.Delay(timeoutMilliseconds, deadline.Token);
                     if (!process.Start()) return Result("failed");
                     var output = ReadBoundedAsync(process.StandardOutput, true);
                     var error = ReadBoundedAsync(process.StandardError, false);
-                    var input = WriteInputAsync(process.StandardInput, request);
-                    var exited = process.WaitForExitAsync();
+                    var input = WriteInputAsync(process.StandardInput.BaseStream, request);
+                    var exited = WaitForExitAsync(process);
                     exchange = Task.WhenAll(input, output, error, exited);
                     var winner = await Task.WhenAny(exchange, timeout, cancelled.Task)
                                            .ConfigureAwait(false);
@@ -113,7 +115,15 @@ namespace ReedlineAi.PowerShellAdapterV1
 
         private static void Kill(Process process)
         {
-            try { if (!process.HasExited) process.Kill(true); }
+            try
+            {
+                if (!process.HasExited)
+                {
+                    var killTree = typeof(Process).GetMethod("Kill", new[] { typeof(bool) });
+                    if (killTree != null) killTree.Invoke(process, new object[] { true });
+                    else process.Kill(); // .NET Framework: parent only, no shell involved.
+                }
+            }
             catch { try { if (!process.HasExited) process.Kill(); } catch { } }
         }
 
@@ -124,11 +134,58 @@ namespace ReedlineAi.PowerShellAdapterV1
                 TaskScheduler.Default);
         }
 
-        private static async Task WriteInputAsync(StreamWriter writer, string request)
+        private static async Task WriteInputAsync(Stream stream, string request)
         {
-            await writer.WriteAsync(request).ConfigureAwait(false);
-            await writer.FlushAsync().ConfigureAwait(false);
-            writer.Close();
+            // Write bytes directly: Framework's redirected stdin defaults to the
+            // console encoding, which would corrupt Chinese and supplementary text.
+            var bytes = new UTF8Encoding(false, true).GetBytes(request);
+            await stream.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+            stream.Close();
+        }
+
+        private static Task WaitForExitAsync(Process process)
+        {
+            var exited = new TaskCompletionSource<bool>();
+            process.EnableRaisingEvents = true;
+            process.Exited += (sender, args) => exited.TrySetResult(true);
+            if (process.HasExited) exited.TrySetResult(true);
+            return exited.Task;
+        }
+
+        private static void ConfigureArguments(ProcessStartInfo start, string[] arguments)
+        {
+            var argumentList = typeof(ProcessStartInfo).GetProperty("ArgumentList");
+            if (argumentList != null)
+            {
+                var list = (System.Collections.Generic.ICollection<string>)argumentList.GetValue(start, null);
+                foreach (var argument in arguments) list.Add(argument);
+            }
+            else
+            {
+                // Windows PowerShell/.NET Framework lacks ArgumentList. Quote
+                // each argv element using Windows CRT rules, never a shell parser.
+                var quoted = new string[arguments.Length];
+                for (int i = 0; i < arguments.Length; i++) quoted[i] = QuoteArgument(arguments[i]);
+                start.Arguments = String.Join(" ", quoted);
+            }
+        }
+
+        public static string QuoteArgument(string argument)
+        {
+            if (argument == null || argument.IndexOf('\0') >= 0)
+                throw new ArgumentException("Invalid argument.");
+            var result = new StringBuilder("\"");
+            int slashes = 0;
+            foreach (char c in argument)
+            {
+                if (c == '\\') { slashes++; continue; }
+                result.Append('\\', c == '\"' ? slashes * 2 + 1 : slashes);
+                result.Append(c);
+                slashes = 0;
+            }
+            result.Append('\\', slashes * 2);
+            return result.Append('\"').ToString();
         }
 
         private static async Task<string> ReadBoundedAsync(StreamReader reader, bool retain)
@@ -148,6 +205,11 @@ namespace ReedlineAi.PowerShellAdapterV1
 
     public static class Text
     {
+        public static long NowMilliseconds
+        {
+            get { return (long)(Stopwatch.GetTimestamp() * (1000.0 / Stopwatch.Frequency)); }
+        }
+
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
 
         public static int ByteCursor(string buffer, int utf16Cursor)

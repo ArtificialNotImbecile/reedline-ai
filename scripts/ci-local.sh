@@ -10,6 +10,9 @@ for tool in cargo python3; do
   fi
 done
 
+# macOS /var is a symlink; private-path fixtures must use its canonical parent.
+export TMPDIR="$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()))')"
+
 python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 -m unittest discover -s integrations/shared -p 'test_*.py'
 
@@ -44,5 +47,6 @@ python3 scripts/pty_mobile.py target/release/reedline-ai
 python3 scripts/pty_bash_adapter.py
 python3 scripts/pty_bash_adapter.py target/release/reedline-ai
 python3 scripts/pty_installed_bash.py
+python3 scripts/pty_bash_startup.py
 
 printf '\nLocal CI passed on %s. No hosted workflow or remote model API was invoked.\n' "$(uname -s)"

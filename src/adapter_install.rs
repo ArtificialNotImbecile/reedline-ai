@@ -177,11 +177,11 @@ fn doctor(shell: ShellKind) -> Result<(), Error> {
     };
     let (runtime, dependency, requirements) = match shell {
         ShellKind::Bash => (
-            Command::new("bash").args(["--noprofile", "--norc", "-c", "printf '%s' \"$BASH_VERSION\"; (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) ))"]).env_remove("BASH_ENV").env_remove("ENV").output(),
-            Some(python()), "Bash >= 5.1 and Python >= 3.9; explicitly source in interactive Bash"),
+            Command::new(std::env::var("REEDLINE_AI_BASH").unwrap_or_else(|_| "bash".into())).args(["--noprofile", "--norc", "-c", "printf '%s' \"$BASH_VERSION\"; (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) ))"]).env_remove("BASH_ENV").env_remove("ENV").output(),
+            Some(python()), "Bash >= 4.3 and Python >= 3.9; explicitly source in interactive Bash"),
         ShellKind::PowerShell => (
-            Command::new("pwsh").args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSReadLine -ErrorAction Stop; $PSVersionTable.PSVersion.ToString(); (Get-Module PSReadLine).Version.ToString(); if ($PSVersionTable.PSVersion -lt [version]'7.2' -or (Get-Module PSReadLine).Version -lt [version]'2.2') { exit 1 }"]).output(),
-            None, "PowerShell >= 7.2 and PSReadLine >= 2.2; experimental, Windows/macOS untested"),
+            Command::new(std::env::var("REEDLINE_AI_PWSH").unwrap_or_else(|_| if cfg!(windows) { "powershell.exe".into() } else { "pwsh".into() })).args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSReadLine -ErrorAction Stop; $PSVersionTable.PSVersion.ToString(); (Get-Module PSReadLine).Version.ToString(); if ($PSVersionTable.PSVersion -lt [version]'5.1' -or (Get-Module PSReadLine).Version -lt [version]'2.0') { exit 1 }"]).output(),
+            None, "PowerShell >= 5.1 and PSReadLine >= 2.0; experimental, Windows 5.1 requires native validation"),
         ShellKind::Nushell => (
             Command::new("nu").args(["--no-config-file", "-c", "print (version | get version); help job spawn | ignore; help job recv | ignore; help commandline get-cursor | ignore"]).output(),
             Some(python()), "Nushell experimental job/commandline APIs (tested 0.116.1) and Python >= 3.10"),

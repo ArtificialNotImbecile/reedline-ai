@@ -1,8 +1,8 @@
-# Offline fixture. Nothing read from stdin is evaluated.
+﻿# Offline fixture. Nothing read from stdin is evaluated.
 param([string]$Mode = 'ok', [string]$CountFile = '', [string]$Literal = '')
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$request = [Console]::In.ReadToEnd() | ConvertFrom-Json -AsHashtable
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 if ($CountFile) { [IO.File]::AppendAllText($CountFile, "request`n") }
 if ($Mode -eq 'slow') { Start-Sleep -Seconds 30 }
 if ($Mode -eq 'failure') { [Console]::Error.WriteLine('PRIVATE STDERR MUST NOT BE DISPLAYED'); exit 7 }

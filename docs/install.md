@@ -4,7 +4,7 @@ The native adapters and their transport helpers are bundled **inside the Rust bi
 
 ## Bash quickstart
 
-Requirements: Linux with Bash ≥5.1, Python ≥3.9 and a UTF-8 locale; source build additionally needs the repository's pinned Rust toolchain. Tested in isolated Linux Bash PTYs, not macOS's bundled Bash 3.2, Windows Git Bash, or arbitrary terminal/locale combinations.
+Requirements: Linux/macOS with Bash ≥4.3, Python ≥3.9 and a UTF-8 locale; source build additionally needs the repository's pinned Rust toolchain. Tested in isolated Bash PTYs on Linux and macOS. macOS bundled Bash 3.2 cannot edit Readline buffers; use a newer Bash. Windows Git Bash and arbitrary terminal/locale combinations still need validation.
 
 From a checked-out reviewed revision:
 
@@ -28,8 +28,8 @@ source "$HOME/.local/share/reedline-ai-bash/reedline-ai.bash"
 Type `echo 世` (do not press Enter), then:
 
 1. Ctrl-x Ctrl-g starts the request without blocking editing.
-2. Ctrl-x Ctrl-a displays the ready preview; if still pending, press it again later.
-3. Ctrl-x Ctrl-a again inserts `界` into the existing command line, without executing.
+2. Ctrl-x Ctrl-g again displays the ready preview; if still pending, press it again later.
+3. Ctrl-x Ctrl-g once more inserts `界` into the existing command line, without executing.
 4. Ctrl-C cancels the line as usual. Native Tab, arrows and history remain Bash's.
 
 For `git st`, the conservative review is incomplete, so after preview use Ctrl-x Ctrl-r to acknowledge, then Ctrl-x Ctrl-a to insert. This is not a safety guarantee. Enter remains native Bash execution; inspect the resulting command before pressing it.
@@ -47,7 +47,7 @@ No automatic `.bashrc` edit is made. After testing, you may add the explicit sou
 
 ## Optional HTTP mode
 
-First verify mock mode. HTTP sends only the invoked current buffer and explicitly supplied shell metadata to your configured provider; cwd is local-only and native history is not read. Set your key in the process environment using your existing secure mechanism, then select an explicit provider/endpoint/model:
+First verify mock mode. HTTP sends only the invoked current buffer and explicitly supplied shell metadata to your configured provider; cwd and the locally matched history candidate stay local. No history is uploaded. Set your key in the process environment using your existing secure mechanism, then select an explicit provider/endpoint/model:
 
 ```bash
 REEDLINE_AI_ARGS=(--backend http --endpoint https://YOUR_PROVIDER/chat/completions --model YOUR_MODEL --timeout-seconds 8)
@@ -64,7 +64,7 @@ All packages default to the offline mock and must be explicitly enabled in the r
 
 ### PowerShell
 
-Requires PowerShell ≥7.2 and PSReadLine ≥2.2; tested on Linux PowerShell 7.4.6/PSReadLine 2.3.5, not Windows/macOS. The module must be allowed to compile its adjacent trusted C# helper. Do not weaken execution/security policies for it.
+Requires PowerShell ≥5.1 and PSReadLine ≥2.0; PowerShell 7.4.6/PSReadLine 2.3.5 has native PTY coverage on Linux and macOS. Windows 5.1 still requires native validation. The module must be allowed to compile its adjacent trusted C# helper. Do not weaken execution/security policies for it.
 
 ```powershell
 reedline-ai adapter doctor --shell powershell
@@ -114,3 +114,17 @@ reedline-ai adapter install --shell cmd --experimental --directory "%LOCALAPPDAT
 ```
 
 Follow the [CMD/Clink guide](cmd-adapter.md) for its explicit session-only loading and disable steps. Keep its `cmd` and `shared` directories together. Do not add it to an existing Clink profile until you have tested it in a disposable session. Removal uses `adapter uninstall --shell cmd --directory` with the same path after disabling the session.
+
+## Runtime compatibility and history
+
+Bash 4.3–5.0 uses a scalar prompt hook; 5.1+ uses a prompt-command array.
+`REEDLINE_AI_BASH` selects the doctor/launcher runtime. PowerShell 5.1+ with
+PSReadLine 2.0+ has a compatibility path; `REEDLINE_AI_PWSH` selects the doctor
+runtime. Enabling checks required editor APIs. Windows PowerShell 5.1, Git Bash,
+and CMD/Clink remain native Windows validation targets.
+
+Bash, PowerShell and Nushell use their own already-loaded history, locally first.
+No first-run cloud analysis or cross-shell history import occurs. Bash history
+is disabled with `REEDLINE_AI_HISTORY=0`, PowerShell with `-NoHistory`, and Nushell
+with `$env.REEDLINE_AI_HISTORY = false`. CMD/Clink retains its native history;
+this version does not add history context to its AI adapter.

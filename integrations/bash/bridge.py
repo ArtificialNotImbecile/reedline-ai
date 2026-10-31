@@ -2,7 +2,7 @@
 """Private Bash transport: bounded subprocess, strict JSON, NUL-delimited data.
 
 No shell=True, eval, terminal escapes, history reads, files, or model execution.
-Input is five NUL-terminated UTF-8 fields on stdin, never command-line arguments.
+Input is five or six NUL-terminated UTF-8 fields on stdin, never command-line arguments.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def byte_cursor(text: str, cursor: object) -> bool:
 
 def single_line(text: str) -> bool:
     # Block control, surrogate and invisible formatting codepoints even in data
-    # inserted into Readline. Preview also uses ASCII JSON escapes.
+    # inserted into Readline. Validated Unicode remains readable in the preview.
     return all(unicodedata.category(char) not in {"Cc", "Cs", "Cf", "Zl", "Zp"} for char in text)
 
 
@@ -68,16 +68,20 @@ def read_request() -> dict:
         raise Failure("invalid-input")
     try:
         fields = raw.decode("utf-8").split("\0")
-        if len(fields) != 6 or fields[-1] != "":
+        if len(fields) not in (6, 7) or fields[-1] != "":
             raise ValueError("frame")
-        request_id, version, cwd, buffer, point, _ = fields
+        request_id, version, cwd, buffer, point = fields[:5]
+        candidate = fields[5] if len(fields) == 7 else ""
         cursor = int(point)
         if not buffer.strip():
             raise Failure("empty")
         if len(buffer.encode("utf-8")) > MAX_BUFFER or not single_line(buffer) or not byte_cursor(buffer, cursor):
             raise ValueError("line")
-        return {"protocol": 1, "request_id": request_id, "shell": {"kind": "bash", "version": version},
+        request = {"protocol": 1, "request_id": request_id, "shell": {"kind": "bash", "version": version},
                 "cwd": cwd, "buffer": buffer, "cursor": cursor}
+        if candidate and len(candidate.encode("utf-8")) <= MAX_BUFFER and single_line(candidate):
+            request["history_candidate"] = candidate
+        return request
     except (ValueError, UnicodeError) as error:
         raise Failure("invalid-input") from error
 
@@ -120,8 +124,8 @@ def validate(raw: bytes, request: dict) -> tuple[str, int, bool, str]:
         warnings, incomplete = review["warnings"], review["incomplete"]
         if not isinstance(warnings, list) or any(not isinstance(w, str) for w in warnings) or type(incomplete) is not bool:
             raise ValueError("review")
-        preview = json.dumps(result, ensure_ascii=True)
-        if len(preview) > MAX_PREVIEW:
+        preview = result
+        if len(preview.encode("utf-8")) > MAX_PREVIEW:
             raise Failure("output-limit")
         # Do not trust --risk-policy off/warn to disable the adapter's own gate.
         risk = required or incomplete or bool(warnings)

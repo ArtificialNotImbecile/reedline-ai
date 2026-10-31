@@ -8,6 +8,7 @@ if [[ ! -x "$pwsh" || ! -x "$nu" ]]; then
   printf '%s\n' 'Set REEDLINE_AI_PWSH and NU_BINARY to installed executable paths. Missing runtimes are not a pass.' >&2
   exit 1
 fi
+export TMPDIR="$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()))')"
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 export XDG_CACHE_HOME="$scratch/cache" XDG_CONFIG_HOME="$scratch/config" XDG_DATA_HOME="$scratch/data"
@@ -20,4 +21,4 @@ python3 integrations/powershell/tests/pty_smoke.py "$pwsh" target/debug/reedline
 NU_BINARY="$nu" REEDLINE_AI_TEST_BINARY="$PWD/target/debug/reedline-ai" python3 -m unittest discover -s integrations/nushell -p 'test_*.py'
 python3 scripts/pty_installed_powershell.py "$pwsh"
 python3 scripts/pty_installed_nushell.py "$nu"
-printf '\nExperimental Linux native/installed gates passed. Windows CMD/Clink and macOS remain unverified.\n'
+printf '\nExperimental POSIX native/installed gates passed. Windows CMD/Clink remains unverified.\n'

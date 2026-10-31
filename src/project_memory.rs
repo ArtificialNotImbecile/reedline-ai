@@ -916,11 +916,13 @@ mod tests {
         serde_json::from_str(include_str!("../examples/project-memory.synthetic.json")).unwrap()
     }
     fn temporary_directory() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "reedline-memory-synthetic-{}-{}",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "reedline-memory-synthetic-{}-{}",
+                std::process::id(),
+                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
         fs::create_dir(&path).unwrap();
         #[cfg(unix)]
         {

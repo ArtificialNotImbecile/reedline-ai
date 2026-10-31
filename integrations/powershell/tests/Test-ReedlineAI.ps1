@@ -1,4 +1,4 @@
-#requires -Version 7.2
+﻿#requires -Version 5.1
 # No Pester, network, provider keys, profile edits, or actual command execution.
 # Uses real ProcessStartInfo transport but a stub editor, not an interactive PTY.
 [CmdletBinding()]
@@ -22,6 +22,9 @@ function Assert-Throws([scriptblock]$Action, [string]$Message) {
     try { & $Action | Out-Null } catch { $threw = $true }
     Assert $threw $Message
 }
+function Get-TestKeyHandler([string[]]$Chord) {
+    foreach ($key in $Chord) { & $module { param($key) Get-ReedlineAiKeyHandler $key } $key }
+}
 function Wait-JobReply($Job) {
     Assert ($Job.Completion.Wait(6000)) 'worker completes within bound'
     return $Job.Completion.GetAwaiter().GetResult()
@@ -32,6 +35,9 @@ function New-FixtureJob([string]$Mode = 'ok', [int]$Timeout = 4000, [string]$Lit
     return [ReedlineAi.PowerShellAdapterV1.Job]::Start($pwsh, $arguments, $temporary, $requestJson, $Timeout)
 }
 try {
+    Assert ([ReedlineAi.PowerShellAdapterV1.Job]::QuoteArgument('') -ceq '""') 'empty Windows argument'
+    Assert ([ReedlineAi.PowerShellAdapterV1.Job]::QuoteArgument('a b\') -ceq '"a b\\"') 'trailing Windows backslash'
+    Assert ([ReedlineAi.PowerShellAdapterV1.Job]::QuoteArgument('a"b') -ceq '"a\"b"') 'embedded Windows quote'
     Assert (-not (Test-Path $countFile)) 'import does not start a request'
     Assert ([ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor('echo 世🦀後', 8) -eq 12) 'UTF-16 to UTF-8 cursor'
     Assert-Throws { [ReedlineAi.PowerShellAdapterV1.Text]::ByteCursor('echo 世🦀後', 7) } 'split surrogate rejected'
@@ -55,10 +61,12 @@ try {
         $bad = Wait-JobReply (New-FixtureJob $mode)
         Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $bad.Output $snapshot } "reject $mode"
     }
-    $bad = $reply.Output | ConvertFrom-Json -AsHashtable
+    $bad = @{}
+    ($reply.Output | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $bad[$_.Name] = $_.Value }
     $bad.result = 'replacement'; $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
     Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshot } 'replacement result rejected'
-    $bad = $reply.Output | ConvertFrom-Json -AsHashtable
+    $bad = @{}
+    ($reply.Output | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $bad[$_.Name] = $_.Value }
     $bad.Remove('risk_review'); $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
     Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshot } 'missing risk review rejected'
     $literal = 'quote'' " $() ; & | ` literal'
@@ -79,23 +87,23 @@ try {
     Assert ([string]::IsNullOrEmpty($large.Output)) 'failure never exposes child output'
 
     # Real PSReadLine registration lifecycle, without running the editor loop.
-    Import-Module PSReadLine -MinimumVersion 2.2
+    Import-Module PSReadLine -MinimumVersion 2.0
     $nativeBefore = Get-PSReadLineKeyHandler -Bound | Sort-Object Key | Select-Object Key, Function | ConvertTo-Json -Compress
     Enable-ReedlineAI -Binary $pwsh
-    Assert (@(Get-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a', 'Ctrl+Alt+g', 'Ctrl+Alt+x').Count -eq 3) 'register three native handlers'
+    Assert (@(Get-TestKeyHandler -Chord 'Ctrl+Alt+a', 'Ctrl+Alt+g', 'Ctrl+Alt+x').Count -eq 3) 'register three native handlers'
     Disable-ReedlineAI
     $nativeAfter = Get-PSReadLineKeyHandler -Bound | Sort-Object Key | Select-Object Key, Function | ConvertTo-Json -Compress
     Assert ($nativeBefore -ceq $nativeAfter) 'disable restores all original native bindings'
     Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a' -Function BeginningOfLine
     Assert-Throws { Enable-ReedlineAI -Binary $pwsh } 'refuse existing binding collision'
-    Assert ((Get-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a').Function -eq 'BeginningOfLine') 'collision leaves existing binding intact'
+    Assert ((Get-TestKeyHandler -Chord 'Ctrl+Alt+a').Function -eq 'BeginningOfLine') 'collision leaves existing binding intact'
     Remove-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a'
 
     Enable-ReedlineAI -Binary $pwsh
     Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a' -BriefDescription ReedlineAiRequest -ScriptBlock { }
     Disable-ReedlineAI
-    Assert (@(Get-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a').Count -eq 1) 'disable preserves replaced handler even with same display name'
-    Assert (@(Get-PSReadLineKeyHandler -Chord 'Ctrl+Alt+g', 'Ctrl+Alt+x').Count -eq 0) 'disable removes owned sibling bindings'
+    Assert (@(Get-TestKeyHandler -Chord 'Ctrl+Alt+a').Count -eq 1) 'disable preserves replaced handler even with same display name'
+    Assert (@(Get-TestKeyHandler -Chord 'Ctrl+Alt+g', 'Ctrl+Alt+x').Count -eq 0) 'disable removes owned sibling bindings'
     Remove-PSReadLineKeyHandler -Chord 'Ctrl+Alt+a'
 
     # Replace only the module's editor boundary. No real PSReadLine edit is used.
@@ -109,6 +117,7 @@ try {
         function script:Write-ReedlineAiStatus([string]$Message) { $script:TestStatus = $Message }
         function script:Add-ReedlineAiText([string]$Text) { $script:TestInserted += $Text }
         $script:Configuration = [pscustomobject]@{
+            UseHistory = $false
             Binary = $binary
             Arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $fixture, '-CountFile', $countFile)
             TestCwd = $cwd; TimeoutMilliseconds = 4000; RequestChord = 'Ctrl+Alt+a'; AcceptChord = 'Ctrl+Alt+g'
@@ -128,8 +137,8 @@ try {
     $null = Wait-JobReply $pending
     & $module { Invoke-ReedlineAiRequest }
     Assert (& $module { $null -ne $script:Preview -and $script:TestInserted -eq '' }) 'second request previews without insert'
-    & $module { Accept-ReedlineAiSuggestion; Accept-ReedlineAiSuggestion }
-    Assert (& $module { $script:TestInserted -ceq '世界' }) 'separate accept inserts once only'
+    & $module { Invoke-ReedlineAiRequest; Accept-ReedlineAiSuggestion }
+    Assert (& $module { $script:TestInserted -ceq '世界' }) 'third request key inserts once only'
     foreach ($change in @('Buffer', 'Cursor', 'Cwd', 'Selection')) {
         $pending = & $module { Invoke-ReedlineAiRequest; return $script:Pending.Job }
         $null = Wait-JobReply $pending

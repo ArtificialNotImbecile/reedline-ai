@@ -1,4 +1,4 @@
-//! Versioned, stdin-only bridge for native shell editors. No execution or history access.
+//! Versioned, stdin-only bridge for native shell editors. No execution or history-file access.
 use crate::{
     backend::Backend,
     context::{Context, unsafe_char},
@@ -18,6 +18,9 @@ pub struct Request {
     pub cwd: String,
     pub buffer: String,
     pub cursor: usize,
+    /// At most one locally matched shell-history command. Never model context.
+    #[serde(default)]
+    pub history_candidate: Option<String>,
 }
 #[derive(Serialize)]
 pub struct Response {
@@ -66,10 +69,26 @@ pub fn complete(
     }
     // cwd is validated but deliberately never added to Context, read, or sent to a provider.
     let context = Context::new(&request.buffer, request.cursor)?.with_shell(request.shell)?;
+    let local = request.history_candidate.as_deref().and_then(|candidate| {
+        if candidate.len() > 8192
+            || candidate.starts_with(char::is_whitespace)
+            || candidate.chars().any(unsafe_char)
+        {
+            return None;
+        }
+        let insertion = candidate
+            .strip_prefix(context.prefix())?
+            .strip_suffix(context.suffix())?;
+        (!insertion.is_empty() && crate::context::validate_insertion(insertion).is_ok())
+            .then(|| insertion.to_owned())
+    });
     let insertion = if context.is_empty() {
         String::new()
     } else {
-        backend.complete(&context)?
+        match local {
+            Some(insertion) => insertion,
+            None => backend.complete(&context)?,
+        }
     };
     let result = context.insert(&insertion)?;
     let risk_review = review(context.shell(), &result);
@@ -103,6 +122,7 @@ mod tests {
             cwd: "/synthetic-private-path".into(),
             buffer: buffer.into(),
             cursor,
+            history_candidate: None,
         }
     }
     #[test]
@@ -143,6 +163,35 @@ mod tests {
         assert!(complete(request("世", 1), &Never).is_err());
         assert!(read_request(&b"{\"PRIVATE\":1}"[..]).is_err());
         assert!(read_request(&vec![b' '; MAX_REQUEST_BYTES as usize + 1][..]).is_err());
+    }
+    #[test]
+    fn history_is_local_first_and_preserves_unicode_suffix() {
+        let mut r = request("echo 世 后", 8);
+        r.history_candidate = Some("echo 世界 后".into());
+        assert_eq!(complete(r, &Never).unwrap().result, "echo 世界 后");
+    }
+    struct NoHistory;
+    impl Backend for NoHistory {
+        fn complete(&self, c: &Context) -> Result<String, BackendError> {
+            assert!(
+                !serde_json::to_string(c)
+                    .unwrap()
+                    .contains("PRIVATE_HISTORY")
+            );
+            Ok("x".into())
+        }
+    }
+    #[test]
+    fn unrelated_history_never_enters_remote_context() {
+        for candidate in [
+            "PRIVATE_HISTORY",
+            " echo PRIVATE_HISTORY",
+            "echo \nPRIVATE_HISTORY",
+        ] {
+            let mut r = request("echo ", 5);
+            r.history_candidate = Some(candidate.into());
+            assert_eq!(complete(r, &NoHistory).unwrap().result, "echo x");
+        }
     }
     struct Dangerous;
     impl Backend for Dangerous {

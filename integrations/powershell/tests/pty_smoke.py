@@ -156,13 +156,21 @@ Set-PSReadLineKeyHandler -Chord 'F12' -ScriptBlock {{
         send(b'\r', 0.3)  # Fixed test command only, never suggested text.
         send(b'\x1b[A')
         assert state()['buffer'] == "Write-Output 'NATIVE_HISTORY_MARKER'"
+        # Use the host's loaded history, including a native insertion/undo path.
+        line("echo remembered_world")
+        send(b'\r', 0.3)
+        preview('echo rem')
+        send(REQUEST)
+        assert state()['buffer'] == 'echo remembered_world'
+        send(b'\x18\x15')
+        assert state()['buffer'] == 'echo rem'
         line("Disable-ReedlineAI; [IO.File]::WriteAllText(" + quote(disabled) + ", [string](@(Get-PSReadLineKeyHandler -Chord F6,F7,F8).Count))")
         send(b'\r', 0.2)
         deadline = time.monotonic() + 5
         while not disabled.exists() and time.monotonic() < deadline:
             pump(0.1)
         assert disabled.exists() and disabled.read_text() == '0', bytes(transcript[-6000:])
-        print('PASS: actual Linux PowerShell/PSReadLine PTY request, preview, accept, Unicode FIM, '
+        print(f'PASS: actual {sys.platform} PowerShell/PSReadLine PTY request, preview, accept, Unicode FIM, '
               'undo, blank, stale input, cancel, risk blocking, live editing, native Tab/history, session disable.')
     finally:
         if process.poll() is None:

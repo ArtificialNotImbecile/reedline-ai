@@ -5,12 +5,15 @@ The mock executes a fixed helper in a synthetic local cwd, through a POSIX
 shell, to exercise the remote-command string boundary used by OpenSSH.
 This is NOT an SSH, terminal integration, or TCP forwarding implementation.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 
 MAX_FRAME = 8192
@@ -119,7 +122,7 @@ class MockTransport:
         self.calls += 1
         return subprocess.run(
             ["/bin/sh", "-c", remote_command()], cwd=self.cwd,
-            env={"PATH": "/usr/bin:/bin", "HOME": str(self.cwd), "LC_ALL": "C.UTF-8"},
+            env={"PATH": str(Path(sys.executable).parent) + ":/usr/bin:/bin", "HOME": str(self.cwd), "LC_ALL": "C.UTF-8"},
             capture_output=True, timeout=3, check=True,
         ).stdout
 

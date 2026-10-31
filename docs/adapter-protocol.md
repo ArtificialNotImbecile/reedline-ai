@@ -24,10 +24,20 @@ Response:
 
 Risk review always uses the conservative `confirm` rule in this protocol, even if `--risk-policy off` is passed. Warnings **or incomplete review** require an additional explicit gesture or are blocked by that adapter. `git` intentionally has incomplete review because hooks/aliases/config are unresolved. No warning is not a safety guarantee. Acceptance only changes the editor buffer; the user retains responsibility for execution via the host shell's normal Enter behavior.
 
-History/configuration import flags and explicit CLI shell override conflict with adapter mode. Existing backend options (`--backend http`, endpoint/model/provider, key environment variable, network opt-ins, timeout) remain available. Default is the offline deterministic mock. Backend HTTP timeout defaults to eight seconds and is bounded to 1–60 seconds; callers also need process and stale-result deadlines. No adapter enables HTTP automatically, reads native histories, or modifies profiles.
+History/configuration import flags and explicit CLI shell override conflict with adapter mode. Existing backend options (`--backend http`, endpoint/model/provider, key environment variable, network opt-ins, timeout) remain available. Default is the offline deterministic mock. Backend HTTP timeout defaults to eight seconds and is bounded to 1–60 seconds; callers also need process and stale-result deadlines. No adapter enables HTTP automatically or modifies profiles. Bash, PowerShell and Nushell may select a local native-history candidate as described below; it is never uploaded.
 
 ## Privacy and lifecycle
 
 The current buffer and supplied shell metadata go to the selected provider only in explicitly configured HTTP mode. Do not invoke on secrets. Cwd stays local. An adapter may use private ephemeral transport files when its shell cannot safely exchange asynchronous stdin/stdout; its platform guide states this boundary. Nothing is written to native history by the adapter. Shell history may naturally record a command only when the user later executes it.
 
 The initial native adapters provide explicit-key completion, not automatically refreshed inline AI ghost text. They do not yet connect the prototype's local workflow replacement/memory commands. Native editing, completion and history continue to belong to each real host shell.
+
+### Optional local history candidate
+
+Version 1 accepts optional `history_candidate: string`: one complete command
+selected locally by a shell from at most its newest 200 entries. It is never
+added to model `Context`. If it matches both the prefix and suffix, the Rust
+bridge validates the insertion and returns it without calling the model;
+otherwise the normal current-line-only backend path is used. Blank input still
+makes no model call. Existing request payloads without this field work unchanged.
+All response identity, insertion-only, size and risk checks still apply.

@@ -137,3 +137,12 @@ policies remain a manual validation gate.
 - [Background jobs and mailbox/lifecycle behavior](https://www.nushell.sh/book/background_jobs.html).
 - [Actual grapheme cursor implementation](https://github.com/nushell/nushell/blob/0.116.1/crates/nu-cli/src/commands/commandline/get_cursor.rs).
 - [Python subprocess lifecycle](https://docs.python.org/3/library/subprocess.html).
+
+## Local history before AI
+
+Requests now use Nushell's native structured `history` command to find the newest
+prefix/suffix match among the latest 200 entries, independent of text versus SQLite
+storage and OS path conventions. Set `$env.REEDLINE_AI_HISTORY = false` to disable.
+Only one candidate reaches the local Rust validator; it is never model context.
+Missing/unavailable history falls back to the configured backend with the current
+line only. Native Tab completion and the history menu keep their existing behavior.

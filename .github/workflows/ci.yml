@@ -25,3 +25,19 @@ jobs:
       - name: Interactive PTY smoke test (Linux)
         if: runner.os == 'Linux'
         run: python3 scripts/pty_smoke.py
+      - name: Native Bash adapter (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then brew install bash; fi
+          python3 scripts/pty_bash_adapter.py
+      - name: Windows PowerShell 5.1 transport and editor contract
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          powershell.exe -NoLogo -NoProfile -NonInteractive -File integrations/powershell/tests/Test-ReedlineAI.ps1 -Binary ./target/debug/reedline-ai.exe
+      - name: PowerShell Core transport and editor contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -NonInteractive -File integrations/powershell/tests/Test-ReedlineAI.ps1 -Binary ./target/debug/reedline-ai.exe

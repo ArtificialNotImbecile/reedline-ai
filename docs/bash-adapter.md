@@ -19,7 +19,7 @@ source "$HOME/.local/share/reedline-ai/bash/reedline-ai.bash"
 ```
 
 The default backend is mock; type `echo ` and use the keys below. In the current
-shell, `reedline_ai_disable` cancels work, restores the previous three key
+shell, `reedline_ai_disable` cancels work, restores the previous four key
 bindings still owned by the adapter, and removes the prompt reset hook. Later
 user/plugin key changes survive disable; calling disable again is a no-op. To remove the extracted files:
 
@@ -33,7 +33,7 @@ your own profile later, remove that line yourself when uninstalling.
 
 ## Try it without changing a profile
 
-Requires **Bash 5.1+**, **Python 3.9+**, and the built `reedline-ai` binary. The
+Requires **Bash 4.3+**, **Python 3.9+**, and the built `reedline-ai` binary. The
 macOS system Bash 3.2 is not supported. A UTF-8 locale is recommended for Unicode.
 Run from the repository root:
 
@@ -51,32 +51,37 @@ run `exit`. The default backend is offline mock. Type `echo ` to try it.
 
 ## Keys and explicit acceptance
 
-1. **Ctrl-x Ctrl-g** starts one asynchronous request for the current buffer and
-   cursor. Typing stays responsive while the backend works.
-2. **Ctrl-x Ctrl-a** checks readiness and displays the completed, JSON-escaped
-   preview. It **does not insert on this first review action**. If still pending,
-   it reports that state; continue editing or try the key later.
-3. **Ctrl-x Ctrl-a again** inserts that exact preview, only if the original
-   buffer, cursor, directory, and prompt still match.
-4. If the result has warnings or an incomplete risk review, first press
-   **Ctrl-x Ctrl-r** to acknowledge this particular displayed preview, then
-   **Ctrl-x Ctrl-a** to insert. Normal acceptance cannot bypass this gate.
+Repeat **Ctrl-x Ctrl-g** for the whole flow: request → preview → insert.
+Each step is a separate keypress; a newly received candidate is never inserted
+immediately. While pending, editing remains responsive. Pressing the request key
+after editing cancels the obsolete request and starts one for the new input.
+**Ctrl-x Ctrl-k** cancels AI state without clearing the command you are typing.
 
-Pressing Ctrl-x Ctrl-g while a request is pending also checks/displays the
-result; it never starts another concurrent request. After a preview is shown,
-Ctrl-x Ctrl-g starts a fresh request and forgets its prior acknowledgment.
+The existing **Ctrl-x Ctrl-a** remains an alias for review/insert. Candidates with
+warnings or incomplete risk review still need **Ctrl-x Ctrl-r** to acknowledge
+that exact displayed preview before insertion. Enter stays normal Bash execution.
+Tab, arrows, backspace and native history search are unchanged. The four chords
+are installed in Emacs and Vi insertion maps and restored on disable.
 
-**Enter is still normal Bash execution.** The adapter never sends Enter on your
-behalf. Inspect inserted text before choosing to execute it. Risk review is a
-conservative heuristic, not a security guarantee; aliases, functions, shell
-configuration, and executable behavior can change what a command does. For
-example, `git status` receives an incomplete review and requires acknowledgment.
+Previews display validated Unicode directly, including Chinese, with terminal
+control and invisible formatting characters rejected before display. Run
+`reedline_ai_help` for the shortcut reminder.
 
-Tab, Enter, arrows, backspace, history search, and native completion are not
-rebound. These three Ctrl-x chords are registered in Emacs and Vi insertion
-keymaps, replacing any previous bindings on those chords. Vi command mode is
-unchanged. Preview text is plain ASCII JSON escaping, so Unicode appears as
-`\u....` in the preview but is inserted as the original Unicode text.
+## Local history from the first session
+
+By default, an explicit request searches the latest 200 entries already loaded
+in Bash (`fc`), newest first. A match must preserve both the typed prefix and the
+suffix after the cursor. Only one candidate is passed through a pipe to the local
+Rust validator; it receives the same insertion and risk checks as model output.
+A match makes **zero model calls**. If nothing matches, the configured backend is
+used with the current line only. History is never uploaded, even on a miss.
+
+Set `REEDLINE_AI_HISTORY=0` to disable this. The adapter does not open `.bash_history`,
+merge other shells' histories, or rewrite history settings. Bash's own startup
+and `HISTFILE` determine which history is loaded; a clean `--norc` test session has
+no personal warm-start data. Space-prefixed, multiline, control-bearing and
+oversized candidates are not offered. Local history is useful context, not a
+promise that previously executed commands are safe to run again.
 
 ## Configuration
 
@@ -95,7 +100,7 @@ requires explicit HTTP backend configuration through the existing CLI; no real
 provider or API key is used in the adapter tests. Avoid typing secrets into a
 buffer you send to a configured remote provider. The request includes Bash kind
 and version plus local `cwd`; the backend treats `cwd` as local metadata and does
-not add it to model context. Native Bash history is neither harvested nor sent.
+not add it to model context. A single local history match may accompany the request, but never enters model context.
 
 ## Lifecycle and failure behavior
 
@@ -107,9 +112,9 @@ not add it to model context. Native Bash history is neither harvested nor sent.
 - The bridge validates protocol/version, request identity, exact source buffer,
   UTF-8 byte cursor boundaries, insertion-only result reconstruction, result
   cursor, and risk fields. Malformed responses never modify the line.
-- `READLINE_POINT` is a locale-character offset in the tested Bash runtime.
-  Bash locale-aware substring operations convert it to the protocol's UTF-8 byte
-  offset, then convert the accepted byte offset back to Readline characters.
+- `READLINE_POINT` uses UTF-8 byte offsets in Bash 4.x and locale-character offsets in Bash 5.0+.
+  The adapter selects the correct conversion for each version, including when
+  accepting text and matching local history.
   Thus multibyte text before the cursor and preserved suffixes both work.
 - Input buffers are limited to 8,192 bytes, insertions to 1,024 bytes, backend
   stdout to 128 KiB, and escaped previews to 16 KiB. Fenced output, newlines,
@@ -118,7 +123,7 @@ not add it to model context. Native Bash history is neither harvested nor sent.
 - Editing or moving the cursor invalidates a mismatched snapshot. Changing the
   directory also invalidates it. Editing away and back to an exactly identical
   snapshot within the same prompt is treated as the same buffer.
-- A small reset function is prepended to the native `PROMPT_COMMAND` array.
+- A small reset function is prepended to `PROMPT_COMMAND` (a scalar on Bash 4.3–5.0; native array on 5.1+).
   Every new primary prompt, including after Ctrl-C, cancels the pending pipe and
   clears previews and acknowledgments. Existing scalar/array prompt commands
   remain in order; the reset preserves the previous command's exit status.
@@ -130,7 +135,7 @@ not add it to model context. Native Bash history is neither harvested nor sent.
 - Backend failures expose only fixed local status messages, never raw provider
   errors or model output. The current command line remains unchanged.
 
-This intentionally uses an explicit readiness/review key instead of unsafe
+This uses an explicit readiness/review key instead of unsafe
 asynchronous terminal repaint or a blocking model call inside `bind -x`.
 
 ## Offline validation
@@ -151,8 +156,9 @@ synthetic; no generated suggestion is submitted to Bash for execution.
 
 Verified locally on Linux with Bash 5.2.37, Python 3.12.14, and a POSIX PTY using
 `TERM=xterm-256color`. The default Emacs path is runtime-tested. The Vi insertion
-bindings are installed but full Vi-mode, macOS, other terminals, HTTP providers,
-and SSH paths are not claimed as tested. The installed-assets gate is
+bindings are installed but full Vi-mode, arbitrary terminal emulators and SSH paths are not claimed as tested.
+The 2026-10-31 macOS Bash 4.3/5.0/5.2 and DeepSeek coverage is recorded in
+[VALIDATION.md](VALIDATION.md). The installed-assets gate is
 `python3 scripts/pty_installed_bash.py`, which uses a disposable HOME and tests the
 embedded copy through the same PTY suite (including disable/uninstall).
 
@@ -164,3 +170,26 @@ embedded copy through the same PTY suite (including disable/uninstall).
 
 The manual establishes the callback contract; the PTY regression test establishes
 this implementation's Unicode offset behavior on the tested runtime.
+
+## One-command trial and runtime selection
+
+From a built checkout: `bash scripts/try-bash.sh` starts an offline trial; add
+`--deepseek` to explicitly use the official `deepseek-flash` API with an existing
+`DEEPSEEK_API_KEY` or `REEDLINE_AI_API_KEY`. No credential or profile is written.
+The launcher searches PATH and the Apple Silicon/Intel Homebrew locations for
+Bash 4.3+. `REEDLINE_AI_BASH=/path/to/bash` selects a runtime. Exit returns to the
+original shell. The trial reads `REEDLINE_AI_HISTORY_FILE`, exported `HISTFILE`, or Bash's
+standard `~/.bash_history` locally, and does not save history. Set
+`REEDLINE_AI_HISTORY=0` for a completely fresh trial. The normal sourced adapter
+itself still only uses history that Bash has already loaded. Network environments
+can explicitly add `--allow-env-proxy`; no proxy or certificate settings are changed.
+
+macOS's system Bash 3.2 lacks the editable Readline contract this adapter needs;
+install a newer Bash instead of silently loading a nonfunctional plugin. Linux
+and Windows WSL/Git Bash use the same adapter when Bash/Python meet requirements;
+Windows CMD uses the separate experimental Clink integration.
+
+For a version matrix, set `RAI_BASH=/path/to/bash` when running the PTY suite.
+A separately authorized live test is
+`python3 scripts/pty_deepseek_bash.py --allow-billable-api target/debug/reedline-ai`.
+It sends only three synthetic inputs; no generated command is executed.

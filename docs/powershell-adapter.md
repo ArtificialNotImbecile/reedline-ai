@@ -9,8 +9,10 @@ submits a suggestion. SSH work remains deferred until an environment is provided
 
 ## Requirements and session-only setup
 
-- PowerShell **7.2 or later** (`pwsh`), using PSReadLine **2.2 or later**, with
-  `Get-PSReadLineKeyHandler -Chord`. Windows PowerShell 5.1 is not supported.
+- PowerShell **5.1 or later**, using PSReadLine **2.0 or later**. Both Windows
+  PowerShell (`powershell.exe`) and PowerShell Core (`pwsh`) have compatibility
+  paths. Windows 5.1 still requires native Windows validation. Older PSReadLine
+  releases without `-Chord` use a filtered binding listing.
 - An interactive PSReadLine host in **Windows or Emacs editing mode**. Vi mode is
   rejected by this initial adapter. ISE and other non-PSReadLine hosts are not
   supported. OS/terminal delivery of Ctrl+Alt letters varies.
@@ -45,7 +47,7 @@ checking those keys are not reserved by your terminal.
    request and returns immediately to native editing.
 2. Press `Ctrl+Alt+a` again to collect a ready result and print a preview. If it
    is still pending, input is unchanged. No background thread draws on the host.
-3. Press `Ctrl+Alt+g` within **15 seconds** of the preview to insert text at the
+3. Press `Ctrl+Alt+a` a third time (or `Ctrl+Alt+g`) within **15 seconds** of the preview to insert text at the
    original cursor. The full original buffer, UTF-16 cursor, filesystem cwd and
    lack of a selection must still match. Insertion is one native undoable edit;
    the suffix is preserved. Nothing is submitted or executed.
@@ -72,7 +74,7 @@ from an unchanged buffer. Use `Ctrl+Alt+x` to discard AI state when abandoning a
 line; old pending results expire after the configured timeout plus 15 seconds,
 and shown previews expire after 15 seconds. This is a documented limitation, not
 full prompt-lifecycle invalidation. Acceptance always requires a previously
-shown preview and the separate acceptance key.
+shown preview and a separate acceptance action.
 
 ## Configuration and safety boundaries
 
@@ -95,11 +97,13 @@ put API secrets in arguments; use the backend's documented environment-variable
 mechanism only when intentionally enabling a real provider.
 
 The worker launches an executable using `.NET ProcessStartInfo`,
-`UseShellExecute = false`, and `ArgumentList`. The request is UTF-8 JSON on stdin,
+`UseShellExecute = false`, and `ArgumentList` where available. Windows .NET Framework uses individually
+CRT-quoted arguments, byte-encoded UTF-8 stdin, and an event-based asynchronous
+exit wait instead of newer .NET-only APIs. The request is UTF-8 JSON on stdin,
 not interpolated into a shell, command line or temporary script. Stdout/stderr
 are independently bounded to 65536 characters. Stderr is never displayed. On a
 request deadline or cancellation the worker kills the process tree where the OS
-allows it, with a parent-process fallback. Killing descendants is best-effort,
+allows it, with a parent-process fallback (parent-only on .NET Framework). Killing descendants is best-effort,
 not an OS sandbox; configure only a trusted executable. A descendant that keeps
 redirected handles after its parent has already exited may outlive the deadline;
 .NET cannot reliably recover that process tree. Force-killing the PowerShell host
@@ -139,7 +143,7 @@ was created to remove. When changing editing modes, disable the adapter first.
 
 ## Verification
 
-Run the dependency-free local transport/stub-editor suite in PowerShell 7.2+:
+Run the dependency-free local transport/stub-editor suite in PowerShell 5.1+:
 
 ```powershell
 pwsh -NoLogo -NoProfile -NonInteractive -File integrations/powershell/tests/Test-ReedlineAI.ps1
@@ -158,7 +162,7 @@ Verified locally on Linux with portable PowerShell **7.4.6**, PSReadLine **2.3.5
   history. The harness uses a temporary home and no profiles.
 - Default Ctrl+Alt byte sequences were **not reliably delivered** by that PTY;
   the F-key fallback was used, rather than claiming those chords were tested.
-- Windows/macOS terminal behavior is **not verified**. The same-text/new-prompt
+- Windows terminal behavior is **not verified**. macOS 7.4.6/2.3.5 PTY coverage was added on 2026-10-31 (see VALIDATION.md). The same-text/new-prompt
   limitation above still applies, including on the tested Linux runtime.
 
 Run the POSIX-only native smoke with an existing local PowerShell executable:
@@ -181,8 +185,8 @@ input; cancel with the dedicated chord; test undo/redo; verify native Tab,
 history, arrows and Enter remain unchanged; verify key collisions are refused;
 disable/re-enable; verify no candidate executes until the user intentionally
 submits the command. Windows Terminal, Linux terminals and macOS terminals must
-be reported separately. No SSH, mobile terminal, or Windows PowerShell 5.1
-compatibility is claimed.
+be reported separately. No SSH or mobile terminal validation is claimed. Windows PowerShell 5.1 is a
+compatibility target, not a verified Windows-terminal result.
 
 ## Official API references
 
@@ -193,3 +197,18 @@ Reviewed against Microsoft's PSReadLine and .NET documentation:
 - [Looking up an existing key binding](https://learn.microsoft.com/en-us/powershell/module/psreadline/get-psreadlinekeyhandler)
 - [ArgumentList](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.argumentlist)
 - [Process.Kill and descendant termination limitations](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.kill)
+
+## Local history and older runtimes
+
+On each explicit request, the newest 200 PSReadLine history items are searched
+locally for an exact prefix/suffix match, including persisted history already
+loaded by PSReadLine. Older modules without `GetHistoryItems` fall back to current
+session `Get-History`; this fallback cannot warm-start from earlier sessions.
+`Enable-ReedlineAI -NoHistory` disables this. No paths are guessed or history files
+modified, and no history enters model context. A local match uses the same Rust
+validation and risk gate and makes zero model calls.
+
+Doctor can probe a selected runtime using `REEDLINE_AI_PWSH`; on Windows the
+default probe is `powershell.exe`, elsewhere `pwsh`. Enabling checks the required
+editing methods before changing bindings. ISE, Vi editing and constrained
+language hosts remain outside the supported adapter contract.

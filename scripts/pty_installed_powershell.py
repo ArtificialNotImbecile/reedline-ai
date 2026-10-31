@@ -35,4 +35,4 @@ with tempfile.TemporaryDirectory(prefix="reedline-installed-pwsh-") as temporary
                     "--directory", str(assets)], cwd=home, env=env, check=True)
     assert not assets.exists()
     assert not (home / ".config/powershell/Microsoft.PowerShell_profile.ps1").exists()
-    print("Installed PowerShell PASS: clean-HOME offline install, doctor, bundled module/helper, 66 assertions, native PTY/disable, uninstall. Linux only; experimental limits remain.")
+    print("Installed PowerShell PASS: clean-HOME offline install, doctor, bundled module/helper, 66 assertions, native PTY/disable, uninstall. POSIX host only; Windows terminal validation remains separate.")

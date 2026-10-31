@@ -171,3 +171,88 @@ cancel key; its descendant cleanup is best-effort. Nu job APIs are experimental.
 PS/Nu/CMD block every risky or incomplete review rather than offering Bash's
 extra acknowledgment path. No paid provider call, fresh DS latency claim, hosted
 CI run, actual SSH session or cross-platform binary release is implied.
+
+## 2026-10-31: native shell UX, history warm-start and compatibility
+
+Host: macOS arm64. Tests used disposable homes and synthetic histories. No shell
+profiles or personal histories were modified, and no generated command was run.
+Computer Use could not access Terminal because of its app restriction; these are
+real controlling-terminal/PTY and Readline/PSReadLine tests, not GUI Terminal
+screenshots or mocked editor claims.
+
+### User journeys and regressions
+
+- Bash 4.3.0, 5.0.0, 5.2.0 and 5.3.20: complete native adapter PTY suite passed. This found
+  and fixed byte-based cursors in 4.x, character-based cursors in 5.x, pre-5.1
+  scalar prompt hooks, stale `bind -X` records when replacing older bindings, and
+  the colon-free `bind -X` output introduced by Bash 5.3. The final binding fix was
+  rerun against both 4.3 and 5.3.
+- `scripts/pty_bash_startup.py` exercises the actual trial launcher: startup help,
+  read-only saved history, explicit preview/accept, one-step native undo, cancel
+  without losing input, exit, and unchanged history/profile files. Observed
+  local-preview times were 0.16–0.75 seconds including key polling (the 5.3 run
+  overlapped a release build). This is a
+  small local measurement, not a percentile or a comparison with Nushell.
+- The regular suite covers Unicode FIM, native Tab/history/editing, a new request
+  after an edit, Ctrl-C and dedicated cancellation, cwd/cursor/line staleness,
+  timeout, invalid/control/oversized replies, no execution, and disable/re-enable.
+- PowerShell 7.4.6 / PSReadLine 2.3.5: 69 transport/stub-editor assertions passed;
+  separate native macOS PTY tests passed, including loaded-history suggestions,
+  one-step undo, native completion/history, cancellation and disable ownership.
+- Nushell 0.116.1: structured native-history lookup and the real Rust mock bridge
+  were tested in the native suite. The Linux `/proc` process-cleanup case remains
+  skipped on macOS; that skip is not a macOS process-cleanup pass.
+- `scripts/ci-local.sh` passed on macOS: formatting, Clippy with warnings denied,
+  debug/release Rust tests, builds, all ordinary PTYs and clean-HOME installed
+  Bash extraction/doctor/disable/uninstall. Rust tests: 137 passed per profile,
+  with one pre-existing ignored test per profile. The new startup E2E also passed
+  independently on all four Bash versions and is now part of this gate.
+- An initial temporary toolchain installation emitted a `rust-objcopy`
+  missing-`libLLVM.dylib` warning during release stripping. Rebuilding with the
+  normally installed pinned toolchain resolved it; the final release build
+  completed without that warning. Debug Clippy reported no warnings.
+- The final bundled Bash assets also passed clean-HOME installation, doctor,
+  full PTY restoration tests and uninstall using Homebrew Bash 5.3.20.
+
+The complete `scripts/ci-experimental-local.sh` gate also passed on macOS with
+Python 3.12.16, including clean-HOME PowerShell and Nushell installation,
+embedded module/helper extraction, native PTYs, disable and uninstall. The
+source transport suites additionally ran on Python 3.9.12. The Nu suite reports
+13 passes and one Linux-only skip on each source/installed run.
+
+### Explicitly authorized DeepSeek E2E
+
+The existing `DEEPSEEK_API_KEY` was used, without printing or storing its value.
+Four synthetic requests used the official `deepseek-flash` endpoint, with the
+machine's system proxy explicitly supplied to the test process and
+`--allow-env-proxy`. TLS verification remained enabled.
+
+| Journey | Result | Observed time |
+| --- | --- | --- |
+| `git st` suffix | `git status` | 1.54 s |
+| `git  --short`, cursor between spaces | `git status --short` | 1.18 s |
+| `echo 世` | `echo 世界` | 1.36 s |
+| Manual user journey: `find .  # 最近7天修改的 Python 文件` | Inserted `-type f -name "*.py" -mtime -7`, preserved the Chinese comment, acknowledged the review, then undid the edit | Not benchmarked |
+
+`scripts/pty_deepseek_bash.py --allow-billable-api` reproduces the first three
+cases. It is excluded from offline CI, stops on failure, and never submits
+suggested commands. The fourth journey demonstrates semantic infill beyond a
+literal history match; it does not prove that the overall UI is better than
+Nushell's native editing/completion. Automatic inline ghost text is still absent
+from the native Bash adapter: inference is explicitly requested and reviewed.
+
+### Compatibility boundaries
+
+Windows PowerShell 5.1 / PSReadLine 2.0 now has compatibility paths for JSON,
+argument quoting, UTF-8 stdin, async process exit and clocks. A manual Windows CI
+job was added for both Windows PowerShell and PowerShell Core, but no hosted CI
+was started and no native Windows pass is claimed. Stock macOS Bash 3.2 is
+rejected with a concrete newer-Bash setup hint. Git Bash/WSL, CMD/Clink, arbitrary
+terminal emulators, and full Vi-mode behavior need their own native validation.
+
+History stays local: the shell selects one recent prefix/suffix match for the
+Rust validator; misses send only the current command and shell metadata to the
+configured model. There is no first-run bulk upload or implicit cross-shell
+history import. Bash trial startup reads its selected Bash history file and
+never saves back to it. PSReadLine versions without a persisted-history API use
+current-session history only.

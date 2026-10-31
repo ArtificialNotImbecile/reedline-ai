@@ -24,9 +24,11 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "target/debug/reedline-ai").resolve()
+BASH = os.environ.get("RAI_BASH", "bash")
 INVOKE = b"\x18\x07"
 ACCEPT = b"\x18\x01"
 CONFIRM = b"\x18\x12"
+CANCEL = b"\x18\x0b"
 SNAPSHOT = b"\x18\x14"
 
 FIXTURE = r'''
@@ -64,6 +66,8 @@ print(json.dumps(response))
 
 class Shell:
     def __init__(self, folder: Path, prompt_array: bool = False, prompt_export: bool = False):
+        version = subprocess.check_output([BASH, "-c", "printf '%s' \"$BASH_VERSION\""]).decode()
+        self.byte_offsets = int(version.split(".")[0]) < 5
         self.folder = folder
         self.snapshot_file = folder / "snapshot"
         self.config = folder / "fixture.json"
@@ -76,9 +80,9 @@ class Shell:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("BASH_FUNC_") and key not in {"BASH_ENV", "ENV", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS"}}
         env.update(HOME=str(folder), INPUTRC="/dev/null", HISTFILE="/dev/null", TERM="xterm-256color",
-                   LC_ALL="C.UTF-8", RAI_FIXTURE_CONFIG=str(self.config), RAI_FIXTURE_CALLS=str(self.calls_file),
+                   LC_ALL="en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8", RAI_FIXTURE_CONFIG=str(self.config), RAI_FIXTURE_CALLS=str(self.calls_file),
                    REEDLINE_AI_BIN=str(BINARY), PS1="RAI> ")
-        self.process = subprocess.Popen(["bash", "--noprofile", "--norc", "-i"], cwd=folder,
+        self.process = subprocess.Popen([BASH, "--noprofile", "--norc", "-i"], cwd=folder,
                                         stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True)
         os.close(slave)
         self.transcript = bytearray()
@@ -129,7 +133,11 @@ class Shell:
             self.pump(0.01)
         fields = self.snapshot_file.read_bytes().split(b"\0")
         assert len(fields) == 6 and fields[-1] == b"", fields
-        return fields[0].decode(), int(fields[1]), *(x.decode() for x in fields[2:5])
+        buffer = fields[0].decode()
+        point = int(fields[1])
+        if self.byte_offsets:
+            point = len(fields[0][:point].decode())
+        return buffer, point, *(x.decode() for x in fields[2:5])
 
     def line(self, text: str):
         self.send(b"\x01\x0b") # Native Home + kill-line, no command submission.
@@ -162,10 +170,10 @@ class Shell:
         state = self.review_ready()
         assert state[0] == line and state[3] == "1", (state, bytes(self.transcript[-3000:]))
 
-    def review_ready(self):
-        deadline = time.monotonic() + 2
+    def review_ready(self, chord=ACCEPT):
+        deadline = time.monotonic() + 4
         while True:
-            self.send(ACCEPT)
+            self.send(chord)
             state = self.snapshot()
             if state[2] != "1" or time.monotonic() >= deadline:
                 return state
@@ -245,12 +253,12 @@ def bridge_cases(shell: Shell):
 
 
 def main():
-    if not shutil.which("bash"):
+    if not shutil.which(BASH):
         raise SystemExit("SKIP: Bash unavailable")
     if not BINARY.exists():
         raise SystemExit(f"Build the binary first: {BINARY}")
     with tempfile.TemporaryDirectory(prefix="reedline-bash-") as temp:
-        folder = Path(temp)
+        folder = Path(temp).resolve()
         (folder / "elsewhere").mkdir()
         (folder / "completion_unique_fixture").write_text("native completion")
         shell = Shell(folder)
@@ -264,6 +272,13 @@ def main():
             shell.send(ACCEPT)
             assert shell.snapshot()[:2] == ('echo "hello world"', 18)
             assert b"inserted only, not executed" in shell.transcript
+            # The same request chord handles all three stages without re-requesting.
+            shell.line("echo ")
+            shell.send(INVOKE, 0.2)
+            shell.review_ready(INVOKE)
+            assert shell.snapshot()[0] == "echo " and shell.snapshot()[3] == "1"
+            shell.send(INVOKE)
+            assert shell.snapshot()[0] == 'echo "hello world"'
             # Actual conservative git review requires a distinct acknowledgment.
             shell.ready_preview("git ")
             shell.send(ACCEPT)
@@ -271,6 +286,19 @@ def main():
             shell.send(CONFIRM)
             shell.send(ACCEPT)
             assert shell.snapshot()[:2] == ("git status", 10)
+            # Shell history warm-start, including Unicode FIM, before any AI call.
+            shell.command("echo remembered世界 --suffix")
+            shell.line("echo rem --suffix")
+            shell.send(b"\x1b[D" * 9)
+            shell.send(INVOKE, 0.2)
+            shell.review_ready()
+            shell.send(INVOKE)
+            assert shell.snapshot()[:2] == ("echo remembered世界 --suffix", 17)
+            shell.command("REEDLINE_AI_HISTORY=0")
+            shell.ready_preview("echo ")
+            shell.send(INVOKE)
+            assert shell.snapshot()[0] == 'echo "hello world"'
+            shell.command("REEDLINE_AI_HISTORY=1")
             shell.fixture_backend()
             before = len(shell.calls())
             shell.line("cat completion_uni")
@@ -298,6 +326,30 @@ def main():
             assert shell.calls()[-1]["cursor"] == 8
             assert shell.calls()[-1]["shell"]["kind"] == "bash"
             assert shell.calls()[-1]["cwd"] == str(folder)
+            assert "世界".encode() in shell.transcript, "Unicode preview was escaped"
+            # Cancellation keeps the current editable input and resets preview state.
+            shell.ready_preview("echo ")
+            shell.send(CANCEL)
+            assert shell.snapshot() == ("echo ", 5, "0", "0", "0")
+            # Requesting after an edit cancels an obsolete worker and starts fresh.
+            shell.configure(delay=5)
+            shell.line("echo ")
+            count = len(shell.calls())
+            shell.send(INVOKE)
+            shell.wait_calls(count + 1)
+            previous_pid = shell.calls()[-1]["_test_pid"]
+            shell.configure(insert="new")
+            shell.send("x")
+            shell.send(INVOKE, 0.2)
+            shell.review_ready()
+            shell.send(INVOKE)
+            assert shell.snapshot()[0] == "echo xnew"
+            try:
+                os.kill(previous_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError("replaced backend is still alive")
             # Model punctuation is data, including substitutions and quote breaks.
             marker = folder / "MUST_NOT_EXIST"
             insertion = f'"; $(touch {marker}); `touch {marker}`; echo "'
@@ -317,7 +369,7 @@ def main():
             # here proves editing responsiveness without fixed inference sleeps.
             shell.send("x", 0.02)
             assert shell.snapshot()[0] == "echo x"
-            shell.send(INVOKE, 0.1)
+            shell.send(ACCEPT, 0.1)
             assert len(shell.calls()) == count + 1, "duplicate in-flight worker"
             release.touch()
             shell.review_ready()
@@ -414,11 +466,13 @@ def main():
             array_folder = folder / "array-prompt"
             array_folder.mkdir()
             (array_folder / "elsewhere").mkdir()
-            array_shell = Shell(array_folder, prompt_array=True, prompt_export=True)
+            version = subprocess.check_output([BASH, "-c", "printf '%s' \"$BASH_VERSION\""]).decode()
+            prompt_arrays = tuple(map(int, version.split(".")[:2])) >= (5, 1)
+            array_shell = Shell(array_folder, prompt_array=prompt_arrays, prompt_export=True)
             try:
                 array_shell.command("false")
                 array_shell.command(f"printf '%s:%s' \"$__rai_seen\" \"$__rai_second\" > {shlex.quote(str(array_folder / 'status'))}")
-                assert (array_folder / "status").read_text() == "1:yes"
+                assert (array_folder / "status").read_text() == ("1:yes" if prompt_arrays else "1:")
                 array_shell.ready_preview("echo ")
                 array_shell.send(b"\x03")
                 array_shell.line("echo ")
@@ -427,8 +481,8 @@ def main():
                 array_shell.command("reedline_ai_disable")
                 array_shell.command(f"declare -p PROMPT_COMMAND > {shlex.quote(str(array_folder / 'prompt-decl'))}")
                 declaration = (array_folder / "prompt-decl").read_text()
-                assert declaration.startswith("declare -ax PROMPT_COMMAND="), declaration
-                assert "__rai_seen" in declaration and "__rai_second" in declaration, declaration
+                assert declaration.startswith("declare -ax PROMPT_COMMAND=" if prompt_arrays else "declare -x PROMPT_COMMAND="), declaration
+                assert "__rai_seen" in declaration, declaration
                 # Exported indexed argument arrays are accepted when enabling.
                 array_shell.command(f"export REEDLINE_AI_ARGS; source {shlex.quote(adapter_path)}")
                 array_shell.ready_preview("echo ")

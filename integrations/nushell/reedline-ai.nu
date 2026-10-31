@@ -1,6 +1,6 @@
 # Opt-in native Nushell adapter. Source this file, then call reedline-ai-enable.
 # Requires the commandline and experimental job mailbox APIs (tested on 0.116.1).
-# No profile writes, command execution, history reads, or automatic requests.
+# No profile writes, command execution, history uploads, or automatic requests.
 # Python 3 provides bounded subprocess IO; request/result bytes stay in memory.
 const REEDLINE_AI_DEFAULT_TRANSPORT = path self ../shared/bridge.py
 
@@ -88,13 +88,25 @@ def --env reedline-ai-request [] {
     }
     let cursor = reedline-ai-grapheme-to-byte $buffer (commandline get-cursor)
     let tag = random int 1000000000..2000000000
-    let request = {
+    mut request = {
         protocol: 1
         request_id: (random uuid)
         shell: {kind: nushell, version: (version | get version)}
         cwd: $env.PWD
         buffer: $buffer
         cursor: $cursor
+    }
+    # Native history abstracts text/SQLite storage on Linux, Windows and macOS.
+    # Only the newest matching command goes to the LOCAL validator, never the AI.
+    if ($env.REEDLINE_AI_HISTORY? | default true) {
+        let prefix = if $cursor == 0 { '' } else { $buffer | str substring --utf-8-bytes 0..<($cursor) }
+        let suffix = $buffer | str substring --utf-8-bytes ($cursor)..
+        let candidates = try {
+            history | last 200 | reverse | get command | where {|line|
+                ($line | str starts-with $prefix) and ($line | str ends-with $suffix) and ($line | str length --utf-8-bytes) > ($buffer | str length --utf-8-bytes) and ($line | str length --utf-8-bytes) <= 8192 and not ($line =~ '^\s') and (reedline-ai-safe-text $line)
+            } | first 1
+        } catch { [] }
+        if not ($candidates | is-empty) { $request = ($request | insert history_candidate ($candidates | first)) }
     }
     let executable = $env.REEDLINE_AI_EXECUTABLE
     let arguments = $env.REEDLINE_AI_ARGUMENTS? | default []

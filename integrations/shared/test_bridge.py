@@ -48,6 +48,14 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bytes.fromhex(fields[5]).decode(), s['result'])
         self.assertEqual(fields[6], '11')
 
+    def test_optional_history_candidate_is_bounded(self):
+        r = request()
+        r['history_candidate'] = 'echo 世界 suffix'
+        self.assertEqual(bridge.check_request(r), r)
+        for bad in (None, [], 'x' * 8193, 'echo\nother'):
+            r['history_candidate'] = bad
+            with self.assertRaises(ValueError): bridge.check_request(r)
+
     def test_risk_fail_closed(self):
         r = request()
         for change in ('additional_acceptance_required', 'warnings', 'incomplete'):

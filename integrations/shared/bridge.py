@@ -87,7 +87,8 @@ def safe_text(value: object, maximum: int) -> bool:
 
 
 def check_request(request: object) -> dict:
-    if not isinstance(request, dict) or set(request) != {"protocol", "request_id", "shell", "cwd", "buffer", "cursor"}:
+    required = {"protocol", "request_id", "shell", "cwd", "buffer", "cursor"}
+    if not isinstance(request, dict) or not required <= set(request) or set(request) - required - {"history_candidate"}:
         raise ValueError("invalid request")
     if type(request["protocol"]) is not int or request["protocol"] != 1:
         raise ValueError("invalid protocol")
@@ -99,6 +100,8 @@ def check_request(request: object) -> dict:
         raise ValueError("invalid version")
     if not safe_text(request["cwd"], 4096) or not request["cwd"] or not safe_text(request["buffer"], 8192):
         raise ValueError("invalid input")
+    if "history_candidate" in request and not safe_text(request["history_candidate"], 8192):
+        raise ValueError("invalid history candidate")
     cursor = request["cursor"]
     encoded = request["buffer"].encode("utf-8")
     if type(cursor) is not int or cursor < 0 or cursor > len(encoded):

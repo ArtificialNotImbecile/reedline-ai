@@ -186,6 +186,9 @@ $env.config.keybindings ++= [{{name: inspect_test, modifier: control_alt, keycod
         self.assertEqual(self.snapshot(), ('git st', 6))
         self.assertIn(b'acceptance blocked by risk review', self.transcript)
         self.assertEqual(self.count_requests(), 0)
+        self.send(b'\x03'); self.send('echo remembered_world\r', .3)
+        self.send('echo rem'); self.key('request', .5); self.key('preview'); self.key('accept')
+        self.assertEqual(self.snapshot(), ('echo remembered_world', 21))
 
     def test_typing_during_pending_invalidates_result(self):
         self.send('slow '); self.key('request', .05); self.send('edited', .05)
@@ -194,7 +197,11 @@ $env.config.keybindings ++= [{{name: inspect_test, modifier: control_alt, keycod
         self.assertEqual(self.snapshot(), ('slow edited', 11))
 
     def test_cancel_keeps_single_draining_worker(self):
-        self.send('slow '); self.key('request', .15); self.key('cancel', .15)
+        self.send('slow '); self.key('request', .15)
+        deadline = time.monotonic() + 3
+        while self.count_requests() == 0 and time.monotonic() < deadline:
+            self.pump(.02)
+        self.key('cancel', .05)
         self.key('request', .15)
         self.assertEqual(self.count_requests(), 1)
         self.assertIn(b'one bounded request is still draining', self.transcript)

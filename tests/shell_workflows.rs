@@ -258,10 +258,12 @@ fn memory_cli_create_update_relative_document_and_remove_roundtrip() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "reedline-memory-cli-{}-{unique}",
-        std::process::id()
-    ));
+    let dir = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!(
+            "reedline-memory-cli-{}-{unique}",
+            std::process::id()
+        ));
     std::fs::create_dir(&dir).unwrap();
     #[cfg(unix)]
     {

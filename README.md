@@ -12,6 +12,19 @@ The standalone demo is not your shell. The native adapters instead keep the exis
 
 Start with the [install and mock-first quickstart](docs/install.md), [Bash adapter](docs/bash-adapter.md) and [versioned stdin protocol](docs/adapter-protocol.md). This is explicit request → preview → accept, **not asynchronous inline ghost text**. Nothing installs itself into a profile; the default backend remains offline mock. The protocol always gates warnings or incomplete risk reviews regardless of the standalone risk setting. PowerShell, Nushell and CMD+Clink packages require explicit `--experimental` extraction. See [PowerShell](docs/powershell-adapter.md), [Nushell](docs/nushell-adapter.md), and [CMD+Clink](docs/cmd-adapter.md) for actual runtime coverage and limits; Windows/Clink is not claimed tested.
 
+### Bash 体验与本地历史
+
+构建后运行 `bash scripts/try-bash.sh` 即可进入临时 Bash 体验环境；显式加
+`--deepseek` 使用环境中的 `DEEPSEEK_API_KEY`（或 `REEDLINE_AI_API_KEY`）和
+`deepseek-flash`。默认仍是离线 mock，不修改 profile。Bash 需 4.3+；macOS 自带
+3.2 不具备所需编辑接口，安装新版 Bash 后启动器会查找 Homebrew 路径。
+
+重复 **Ctrl-x Ctrl-g** 完成请求、预览、插入；**Ctrl-x Ctrl-k** 取消 AI 并保留输入。
+中文预览直接可读，原有 Tab、Enter、历史搜索不变。Bash、PowerShell、Nushell
+优先在各自已加载的最近 200 条历史中做本地前缀/后缀匹配，命中不调用模型。
+不进行首次全量上传或跨 Shell 猜测历史路径。设置和兼容范围见
+[安装指南](docs/install.md)；Windows PowerShell 5.1 的兼容实现仍待 Windows 实测。
+
 ## Shell-aware workflows and editable local memory
 
 The standalone prototype now supports explicit target-shell context, exact configured workflow phrases such as `run CCTV`, and previewable whole-line replacements. It is still **not a shell plugin** and never executes commands. Native Reedline history and keys remain first priority; Tab previews complex replacements, Enter accepts only.
