@@ -192,7 +192,7 @@ impl Ledger {
 }
 
 enum TrialClient {
-    Application(HttpBackend),
+    Application(Box<HttpBackend>),
     Experimental(Client),
 }
 
@@ -210,7 +210,9 @@ impl TrialClient {
                     trust_native_certs: args.trust_native_certs,
                 },
             )
-            .map(|backend| Self::Application(backend.with_provider(HttpProvider::DeepSeek)));
+            .map(|backend| {
+                Self::Application(Box::new(backend.with_provider(HttpProvider::DeepSeek)))
+            });
         }
         let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
             .map_err(|_| BackendError::Config("invalid authentication header"))?;
@@ -298,6 +300,7 @@ fn error_kind(error: &BackendError) -> &'static str {
     match error {
         BackendError::Config(_) => "configuration",
         BackendError::Transport => "transport_or_timeout",
+        BackendError::Cancelled => "cancelled",
         BackendError::Status(_) => "provider_status",
         BackendError::BodyTooLarge => "response_size_limit",
         BackendError::InvalidResponse => "invalid_response",

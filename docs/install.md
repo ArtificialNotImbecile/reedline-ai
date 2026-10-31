@@ -1,6 +1,48 @@
-# Install native shell adapters
+# Install and configure reedline-ai
 
-The native adapters and their transport helpers are bundled **inside the Rust binary**. `cargo install` does not require you to keep the source checkout for runtime use. No crates.io/apt package or prebuilt cross-platform release is claimed. Bash has the first complete Linux installation gate. PowerShell, Nushell and CMD+Clink are explicitly experimental and require `--experimental` when extracting; their native platform limits remain below.
+## Simple setup (recommended)
+
+A [prebuilt Linux package](linux-release.md) can be installed without Rust. On other platforms, use a verified platform package if supplied, or the source-build instructions below. Do not treat a Linux binary as a Windows build. The native adapters are bundled in the executable, so the source checkout is not needed at runtime.
+
+Run once from an interactive terminal:
+
+```sh
+reedline-ai setup
+```
+
+The wizard asks only for **Base URL**, **model name**, and an optional **hidden API key**. The protocol is always OpenAI-compatible **chat completions**, not legacy `/completions`. For example, `https://api.openai.com/v1` becomes `https://api.openai.com/v1/chat/completions`; a full `/chat/completions` endpoint is also accepted. Use the model identifier supplied by your service. There is no provider/protocol selector and setup makes no API request.
+
+Settings are stored only after you answer `y` to the save confirmation. A supplied API key is **unencrypted local data**: Unix creates app directory/file with 0700/0600 permissions; Windows inherits directory ACLs, which this program does not tighten or independently verify. Do not sync/share/commit the settings directory. Local user/admin access and backups can expose the key. To avoid disk storage, leave the key blank and supply `REEDLINE_AI_API_KEY` through your existing secure environment mechanism; that environment variable always overrides a saved key. A blank key on a later setup run removes the previously saved key. Escape/Ctrl-C during hidden key entry or declining save leaves existing settings unchanged.
+
+Default location: `$XDG_CONFIG_HOME/reedline-ai/settings.json`, otherwise `~/.config/reedline-ai/settings.json` on Unix; `%APPDATA%\reedline-ai\settings.json` on Windows. `REEDLINE_AI_SETTINGS_DIR` can select another absolute, private directory. Config is separate from project/workflow memory. Run setup again to replace it; there is no key-printing command.
+
+### Enable in the current shell
+
+Bash (Bash ≥4.3 and Python ≥3.9):
+
+```bash
+eval "$(reedline-ai init --shell bash)"
+```
+
+PowerShell ≥5.1 (PSReadLine ≥2.0; Windows 5.1 still needs native validation):
+
+```powershell
+Invoke-Expression (& reedline-ai init --shell powershell | Out-String)
+```
+
+The init command extracts content-verified, version-specific adapter assets under the private app directory and prints quoted initialization code. It never modifies shell profiles, invokes an API, or executes suggestions. Read the printed code first if desired by omitting `eval`/`Invoke-Expression`. Existing/changed assets are checked before loading; modified files cause refusal instead of overwrite. PowerShell uses F6=request/preview/accept, F7=accept, F8=cancel; occupied bindings refuse activation.
+
+After setup, init explicitly selects the configured HTTP backend. Without settings, it selects offline mock. Use `init --shell bash --mock` (or `powershell --mock`) to force mock even when configured. Plain `reedline-ai` still starts the offline standalone demo; `reedline-ai --configured` explicitly uses saved settings there. Native shell integrations only send a request when you invoke their request key, not for each keystroke. The request contains the current command and explicit shell metadata; do not type secrets. Native shell history is not uploaded. The real shell still executes normally when **you** press Enter.
+
+Bash keys: repeat Ctrl-x Ctrl-g to request, preview and accept; Ctrl-x Ctrl-a remains an alternate preview/accept key; Ctrl-x Ctrl-k cancels and preserves input; Ctrl-x Ctrl-r acknowledges risky/incomplete previews before acceptance. Disable with `reedline_ai_disable` before re-running init; repeated init refuses to change an active adapter. PowerShell disables with `Disable-ReedlineAI`; also run `Remove-Module ReedlineAI` before re-running init in the same session. No profile is edited, so opening a fresh shell also starts without this activation. Nushell and CMD currently use the explicit extraction instructions below rather than one-line init.
+
+### Remove settings and init assets
+
+Disable active adapters before uninstalling a binary or assets. Initialization assets are under the app directory's `adapters/` subdirectories; use the matching binary's `adapter uninstall --shell SHELL --directory EXACT_SUBDIRECTORY` to remove unchanged assets, or inspect them and delete manually. Settings and saved keys deliberately survive binary/package uninstall. To remove credentials, rerun setup with a blank key and save, or delete the app's `settings.json` yourself. Do not delete a shared configuration parent or unrelated files.
+
+## Explicit adapter installation (advanced / source build)
+
+The native adapters and their transport helpers are bundled **inside the Rust binary**. `cargo install` does not require you to keep the source checkout for runtime use. No crates.io/apt package or universal cross-platform release is claimed. Bash has the first complete Linux installation gate. PowerShell, Nushell and CMD+Clink are explicitly experimental and require `--experimental` when extracting; their native platform limits remain below.
 
 ## Bash quickstart
 
@@ -47,7 +89,7 @@ No automatic `.bashrc` edit is made. After testing, you may add the explicit sou
 
 ## Optional HTTP mode
 
-First verify mock mode. HTTP sends only the invoked current buffer and explicitly supplied shell metadata to your configured provider; cwd and the locally matched history candidate stay local. No history is uploaded. Set your key in the process environment using your existing secure mechanism, then select an explicit provider/endpoint/model:
+First verify mock mode. HTTP sends only the invoked current buffer and explicitly supplied shell metadata to your configured provider; cwd and the locally matched history candidate stay local. No history is uploaded. The setup/init flow above avoids hand-written flags. For an advanced override, set your key in the process environment using your existing secure mechanism, then select an explicit provider/endpoint/model:
 
 ```bash
 REEDLINE_AI_ARGS=(--backend http --endpoint https://YOUR_PROVIDER/chat/completions --model YOUR_MODEL --timeout-seconds 8)
@@ -73,7 +115,7 @@ Import-Module "$HOME/reedline-ai-powershell/ReedlineAI.psm1"
 Enable-ReedlineAI -Binary reedline-ai -RequestChord F6 -AcceptChord F7 -CancelChord F8
 ```
 
-Type `echo 世`; F6 requests, F6 again shows the ready preview, F7 inserts, F8 discards. These function keys are the Linux-tested fallback; the default Ctrl+Alt chords may not arrive correctly from every terminal. Existing bindings cause enable to refuse rather than overwrite. Risky **and incomplete** results (including Git) are blocked, not silently accepted. Native Ctrl-C alone cannot invalidate an identically retyped buffer during the short preview lifetime: use the explicit discard key. Read [the exact PowerShell caveats](powershell-adapter.md).
+Type `echo 世`; F6 requests, F6 again shows the ready preview, F7 inserts, F8 discards. These function keys were tested on the listed Linux and Windows hosts; the default Ctrl+Alt chords may not arrive correctly from every terminal. Existing bindings cause enable to refuse rather than overwrite. Risky **and incomplete** results (including Git) are blocked, not silently accepted. Native Ctrl-C alone cannot invalidate an identically retyped buffer during the short preview lifetime: use the explicit discard key. Read [the exact PowerShell caveats](powershell-adapter.md).
 
 ```powershell
 Disable-ReedlineAI
@@ -106,7 +148,7 @@ reedline-ai adapter uninstall --shell nushell --directory ($env.HOME | path join
 
 ### CMD with Clink
 
-Stock CMD is not supported by a native predictor interface here. The adapter requires separately installed Clink ≥1.7.12 and Python ≥3.10 on Windows, explicit absolute executable paths, private temporary storage and working Job Object containment. **Windows/Clink native execution has not been validated in this Linux environment.** Portable transport tests and Lua mocks are not a Windows pass.
+Stock CMD is not supported by a native predictor interface here. The adapter requires separately installed Clink ≥1.7.12 and Python ≥3.10 on Windows, explicit absolute executable paths, private temporary storage and working Job Object containment. Native validation passed on Windows 10.0.19045.3803 with Clink 1.9.35, including explicit request/preview/accept, Unicode, v2 local-workflow replacement, native Tab/history, disable and helper/timeout descendant cleanup. Portable transport tests and Lua mocks alone are not a Windows pass.
 
 ```bat
 reedline-ai adapter doctor --shell cmd
@@ -128,3 +170,15 @@ No first-run cloud analysis or cross-shell history import occurs. Bash history
 is disabled with `REEDLINE_AI_HISTORY=0`, PowerShell with `-NoHistory`, and Nushell
 with `$env.REEDLINE_AI_HISTORY = false`. CMD/Clink retains its native history;
 this version does not add history context to its AI adapter.
+
+## Windows validation scope (2026-10-26)
+
+The v0.1.0 Windows package was tested on Windows **10.0.19045.3803**,
+PowerShell **7.6.5** and Clink **1.9.35**, including setup, native PowerShell/CMD
+request-preview-accept flows and restricted v2 local-workflow replacement.
+The Windows binary requires the Microsoft Visual C++ x64 Runtime (14.50 was
+used in validation); that runtime is not bundled.
+This is not an all-Windows compatibility claim. Windows Nushell, interactive
+Bash at a supported version, killing the entire CMD host, and Windows Terminal
+GUI behavior remain unvalidated. Existing experimental, risk-review and
+prompt-lifecycle caveats still apply; no candidate is executed automatically.

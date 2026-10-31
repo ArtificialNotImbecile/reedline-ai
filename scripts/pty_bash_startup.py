@@ -17,6 +17,7 @@ import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+LAUNCHER = Path(os.environ.get("RAI_BASH_LAUNCHER", ROOT / "scripts/try-bash.sh")).resolve()
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "target/debug/reedline-ai").resolve()
 
 with tempfile.TemporaryDirectory(prefix="rai-startup-") as temporary:
@@ -35,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="rai-startup-") as temporary:
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(ROOT)
-        os.execve("/bin/bash", ["bash", str(ROOT / "scripts/try-bash.sh")], env)
+        os.execve("/bin/bash", ["bash", str(LAUNCHER)], env)
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     transcript = bytearray()
 

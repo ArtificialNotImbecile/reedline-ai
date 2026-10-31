@@ -25,7 +25,8 @@ if [[ -z $bash_binary ]]; then
 fi
 binary=${REEDLINE_AI_BIN:-}
 if [[ -z $binary ]]; then
-  if [[ -x $root/target/debug/reedline-ai ]]; then binary=$root/target/debug/reedline-ai
+  if [[ -x $root/bin/reedline-ai ]]; then binary=$root/bin/reedline-ai
+  elif [[ -x $root/target/debug/reedline-ai ]]; then binary=$root/target/debug/reedline-ai
   elif [[ -x $root/target/release/reedline-ai ]]; then binary=$root/target/release/reedline-ai
   else binary=$(command -v reedline-ai || :)
   fi

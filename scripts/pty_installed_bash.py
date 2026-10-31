@@ -7,6 +7,7 @@ or uses the real HOME, a provider, or a package registry.
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 
@@ -23,6 +24,12 @@ def main():
         env.pop("ENV", None)
         env.pop("REEDLINE_AI_API_KEY", None)
         destination = home / "cargo-root"
+        # Preserve the populated compiler/cache while isolating application HOME.
+        env.setdefault("CARGO_HOME", str(Path.home() / ".cargo"))
+        env.setdefault("RUSTUP_HOME", str(Path.home() / ".rustup"))
+        if shutil.which("rustup"):
+            env.setdefault("RUSTUP_TOOLCHAIN", subprocess.check_output(
+                ["rustup", "show", "active-toolchain"], cwd=ROOT, text=True).split()[0])
         subprocess.run(["cargo", "install", "--path", str(ROOT), "--root", str(destination),
                         "--debug", "--locked", "--offline"], cwd=home, env=env, check=True)
         binary = destination / "bin/reedline-ai"

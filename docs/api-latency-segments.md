@@ -122,7 +122,7 @@ not a controlled population benchmark or a p95 estimate.
 
 The offline Rust contract test verifies that the Python product body before
 streaming/provider modifications equals `backend::request_body` for this context.
-The production Rust app remains **nonstreaming** and waits for a full response.
+At the time of this experiment, the production Rust app was **nonstreaming** and waited for a full response. The later [standalone streaming preview](streaming.md) is validated separately.
 This diagnostic is Python/libcurl with streaming. Do not call its first-content
 latency the app's current display latency or directly attribute differences from
 previous Rust nonstreaming totals only to networking.
@@ -245,7 +245,7 @@ CNY 0.000948, not a reconciled invoice.
   beats every fresh request. The fresh minimal request still took 1,146 ms to
   first content, so even this run does **not** establish a subsecond guarantee.
 - These are streaming API observations, not actual terminal display latency.
-  The existing Rust app's nonstreaming completion, intentional debounce,
+  The then-current Rust app's nonstreaming completion, intentional debounce,
   worker scheduling and UI polling remain separate. The local Rust preparation
   measurements above were made on the cloud executor; they were not repeated
   on Windows in this comparison.

@@ -52,7 +52,7 @@ See the separate [15-request synthetic latency report](latency-benchmark.md). Th
 
 The initial published commit `459b8747ae6b7b605826b3f24f635ba6c0d65b44` passed [hosted checks on Linux, macOS and Windows](https://github.com/ArtificialNotImbecile/reedline-ai/actions/runs/39926660746), including Linux PTY smoke, on 2026-10-23. Hosted CI is now manual-only (`workflow_dispatch`), with no push or pull-request trigger. Routine validation uses `bash scripts/ci-local.sh` on Linux/macOS, without starting hosted workflows or calling remote model APIs. A local pass verifies that host only; it does not establish a new cross-platform result.
 
-Known limitations remain intentional: no automatic command execution, no universal inline shell predictor, no native FIM-token adapter, no streaming or active HTTP cancellation, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
+Known limitations remain intentional: no automatic command execution, no universal inline shell predictor, no native FIM-token adapter, native bridge/mobile final-only display, and no guarantee a model's suggestion is semantically correct or safe to copy into a shell. See README for privacy and resource limits.
 
 Independent review found two bugs in the first draft: raw pasted controls could reach default ANSI rendering before validation, and Reedline input batching could accept stale or repeated hints. The iteration introduced pre-render input filtering and input-ordered, one-shot rendered-hint acceptance, with dedicated Rust and PTY regression coverage. This record describes checks, not a formal security certification.
 
@@ -172,6 +172,8 @@ PS/Nu/CMD block every risky or incomplete review rather than offering Bash's
 extra acknowledgment path. No paid provider call, fresh DS latency claim, hosted
 CI run, actual SSH session or cross-platform binary release is implied.
 
+Standalone incremental SSE preview and active local HTTP cancellation are now covered by `tests/http_streaming.rs`, `scripts/pty_streaming.py` and the cancellation tests. See [streaming boundaries](streaming.md) and [cancellation boundaries](http-cancellation.md); no paid API is used for these checks.
+
 ## 2026-10-31: native shell UX, history warm-start and compatibility
 
 Host: macOS arm64. Tests used disposable homes and synthetic histories. No shell
@@ -256,3 +258,49 @@ configured model. There is no first-run bulk upload or implicit cross-shell
 history import. Bash trial startup reads its selected Bash history file and
 never saves back to it. PSReadLine versions without a persisted-history API use
 current-session history only.
+
+## 2026-10-31: v0.2.0 release integration
+
+The published v0.1.0 tag was one commit ahead of main on its release branch.
+That release source was merged before preparing v0.2.0, preserving setup/init,
+SSE previews, active HTTP cancellation and protocol-v2 confirmed workflows.
+History candidates now work with both protocol versions; explicit configured
+workflows retain precedence. No previous platform binary was relabelled.
+
+Host: macOS 26.6 arm64, Rust 1.99.1. Formatting and strict Clippy passed; the
+debug and release Rust suites each passed 164 tests with one existing ignored
+test. Offline Python checks passed 37 tests with eight Linux packaging tests
+skipped on macOS, plus 11 shared transport tests and four v1/v2 contracts.
+The complete experimental gate passed: PowerShell 7.4.6 / PSReadLine 2.3.5
+passed 80 transport/editor assertions and actual PTYs for both source and
+installed modules; Nushell 0.116.1 passed 17 tests with one Linux-only skip in
+each source/installed run. Both installed adapters passed doctor, extraction,
+disable and uninstall in disposable homes.
+
+After merging v0.1.0, the full Bash PTYs additionally passed on 4.3.0 and 5.0.0.
+The normal local gate uses Homebrew Bash 5.3.20. The new workflow tests exposed
+an outdated PowerShell assertion: the already-published risk policy allows
+`Set-Location`; the native test now verifies acceptance and one-step undo.
+Test fixtures now preserve the active Rust toolchain/cache across clean-HOME
+installs, use canonical macOS temporary paths, wait for command readiness, and
+drain/close PTYs correctly during setup and exit rather than relying on fixed
+short sleeps. Production private-path checks were not relaxed.
+
+The final release executable also passed three explicitly authorized official
+DeepSeek `deepseek-flash` Bash PTY requests: suffix `git status` (1.04 s), FIM
+`git status --short` (1.80 s), and Unicode `echo 世界` (1.44 s). These are individual
+observations, not percentiles; no generated command was executed. The existing
+environment key was neither printed nor stored.
+
+`cargo-audit` 0.22.2 fetched 1,395 RustSec advisories and checked the 199 locked
+dependencies with exit status 0, no reported vulnerabilities or warnings.
+The macOS package preflight verified every manifest file hash, its extracted
+0.2.0 executable and the bundled launcher's binary discovery, then passed the
+saved-history preview/insert/undo/cancel/exit journey (0.28 s to local preview).
+The published archive is regenerated from the clean release commit. This
+release ships macOS arm64 and source archives; no v0.2.0 Linux or Windows binary
+was built or natively certified, and the macOS executable is not notarized.
+
+The final complete `scripts/ci-local.sh` and `scripts/ci-experimental-local.sh`
+gates both passed on this release tree, including debug/release setup/init PTYs.
+No hosted CI was started.

@@ -69,6 +69,41 @@ try {
     ($reply.Output | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $bad[$_.Name] = $_.Value }
     $bad.Remove('risk_review'); $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
     Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshot } 'missing risk review rejected'
+    $snapshotV2 = [pscustomobject]@{
+        Protocol = 2; Buffer = 'run CCTV'; Cursor = 8; ByteCursor = 8; RequestId = 'workflow'; Cwd = $temporary
+    }
+    $replacement = 'cd "世界🦀"'
+    $v2 = @{
+        protocol = 2; request_id = 'workflow'; buffer = 'run CCTV'; cursor = 8; insertion = ''
+        replacement = $replacement; result = $replacement
+        result_cursor = [Text.Encoding]::UTF8.GetByteCount($replacement)
+        risk_review = @{ warnings = @(); incomplete = $false }; additional_acceptance_required = $false
+    }
+    $v2Json = $v2 | ConvertTo-Json -Depth 8 -Compress
+    $parsedV2 = & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $v2Json $snapshotV2
+    Assert ($parsedV2.result -ceq $replacement) 'v2 Unicode replacement validates'
+    foreach ($field in @('protocol', 'insertion', 'replacement', 'result', 'result_cursor')) {
+        $bad = $v2.Clone()
+        switch ($field) {
+            protocol { $bad.protocol = 1 }
+            insertion { $bad.insertion = 'x' }
+            replacement { $bad.replacement = $null }
+            result { $bad.result = 'other' }
+            result_cursor { $bad.result_cursor = 1 }
+        }
+        $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
+        Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshotV2 } "v2 rejects $field"
+    }
+    foreach ($text in @(('x' * 8193), 'a```b', "a`nb")) {
+        $bad = $v2.Clone(); $bad.replacement = $text; $bad.result = $text
+        $bad.result_cursor = [Text.Encoding]::UTF8.GetByteCount($text)
+        $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
+        Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshotV2 } 'unsafe replacement rejected'
+    }
+    $bad = $v2.Clone(); $bad.protocol = 1
+    $badJson = $bad | ConvertTo-Json -Depth 8 -Compress
+    $snapshotV1 = $snapshotV2.PSObject.Copy(); $snapshotV1.Protocol = 1
+    Assert-Throws { & $module { param($json, $snapshot) ConvertFrom-ReedlineAiReply $json $snapshot } $badJson $snapshotV1 } 'v1 replacement rejected'
     $literal = 'quote'' " $() ; & | ` literal'
     $literalReply = Wait-JobReply (New-FixtureJob 'ok' 4000 $literal)
     Assert (($literalReply.Output | ConvertFrom-Json).insertion -ceq $literal) 'argument boundaries, no shell interpolation'
@@ -116,6 +151,9 @@ try {
         function script:Get-ReedlineAiEditorState { return $script:TestState }
         function script:Write-ReedlineAiStatus([string]$Message) { $script:TestStatus = $Message }
         function script:Add-ReedlineAiText([string]$Text) { $script:TestInserted += $Text }
+        function script:Set-ReedlineAiText([int]$Length, [string]$Text) {
+            $script:TestReplaced = $Text; $script:TestReplaceLength = $Length
+        }
         $script:Configuration = [pscustomobject]@{
             UseHistory = $false
             Binary = $binary
@@ -170,6 +208,16 @@ try {
     $null = Wait-JobReply $pending
     & $module { Cancel-ReedlineAiRequest; Invoke-ReedlineAiRequest }
     Assert (& $module { $null -eq $script:Preview -and $null -eq $script:Pending }) 'cancelled completed request cannot become preview'
+    & $module {
+        $script:TestState.Buffer = 'run CCTV'; $script:TestState.Cursor = 8
+        $script:TestReplaced = ''
+        $script:Preview = [pscustomobject]@{
+            Snapshot = $script:TestState.PSObject.Copy(); IsReplacement = $true
+            Insertion = ''; Result = 'cd "世界🦀"'; ExpiresAt = [ReedlineAi.PowerShellAdapterV1.Text]::NowMilliseconds + 15000
+        }
+        Accept-ReedlineAiSuggestion; Accept-ReedlineAiSuggestion
+    }
+    Assert (& $module { $script:TestReplaced -ceq 'cd "世界🦀"' -and $script:TestReplaceLength -eq 8 -and $null -eq $script:Preview }) 'replacement accept edits whole line once without execution'
     if ($Binary) {
         $resolved = (Get-Command $Binary -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         $native = [ReedlineAi.PowerShellAdapterV1.Job]::Start($resolved,

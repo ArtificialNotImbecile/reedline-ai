@@ -10,7 +10,7 @@ local source = debug.getinfo(1, 'S').source
 local directory = source:sub(1, 1) == '@' and source:sub(2):match('^(.*)[/\\]') or nil
 local config
 local keys = {
-    {key = [["\C-xg"]], name = 'reedline_ai_request'},
+    {key = [["\C-xq"]], name = 'reedline_ai_request'},
     {key = [["\C-xp"]], name = 'reedline_ai_preview'},
     {key = [["\C-xa"]], name = 'reedline_ai_accept'},
     {key = [["\C-xx"]], name = 'reedline_ai_cancel'},
@@ -61,7 +61,10 @@ local function message(buffer, text)
 end
 
 local function unchanged(buffer, request)
+    local now = os.time()
     return enabled and buffer:getanchor() == nil and request.generation == generation
+        and now >= request.created and now - request.created < 30
+        and (not request.preview_time or (now >= request.preview_time and now - request.preview_time < 15))
         and buffer:getbuffer() == request.buffer
         and buffer:getcursor() - 1 == request.cursor
         and os.getcwd() == request.cwd
@@ -71,15 +74,19 @@ local function parse_frame(text, request)
     if type(text) ~= 'string' or #text > 65536 then return nil end
     local fields = {}
     for value in text:gmatch('([^\n]*)\n') do fields[#fields + 1] = value:gsub('\r$', '') end
-    if #fields ~= 8 or fields[1] ~= 'RLA1' or (fields[8] ~= '0' and fields[8] ~= '1') then return nil end
+    if #fields ~= 8 or (fields[1] ~= 'RLA1' and fields[1] ~= 'RLA2R') or (fields[8] ~= '0' and fields[8] ~= '1') then return nil end
     local id, original, insertion, result = unhex(fields[2]), unhex(fields[3]), unhex(fields[5]), unhex(fields[6])
     local cursor, result_cursor = tonumber(fields[4]), tonumber(fields[7])
+    local replacement = fields[1] == 'RLA2R'
     if id ~= request.id or original ~= request.buffer or cursor ~= request.cursor
-        or not insertion or not result or #insertion > 1024 or #result > 9216 or insertion:find('```', 1, true)
-        or result_cursor ~= cursor + #insertion
-        or result ~= original:sub(1, cursor) .. insertion .. original:sub(cursor + 1)
+        or not insertion or not result or #insertion > (replacement and 8192 or 1024)
+        or #result > 9216 or insertion:find('```', 1, true)
         or result:find('[%z\1-\31\127]') then return nil end
-    return {insertion = insertion, result = result, cursor = result_cursor, blocked = fields[8] == '1'}
+    if replacement then
+        if result ~= insertion or result_cursor ~= #result then return nil end
+    elseif result_cursor ~= cursor + #insertion
+        or result ~= original:sub(1, cursor) .. insertion .. original:sub(cursor + 1) then return nil end
+    return {insertion = insertion, replacement = replacement, result = result, cursor = result_cursor, blocked = fields[8] == '1'}
 end
 
 local function envelope(request)
@@ -87,7 +94,7 @@ local function envelope(request)
     for _, argument in ipairs(request.config.arguments) do args[#args + 1] = json_string(argument) end
     local version = 'Clink ' .. tostring(clink.version_major) .. '.' .. tostring(clink.version_minor) .. '.' .. tostring(clink.version_patch)
     return '{"backend":' .. json_string(request.config.backend) .. ',"arguments":[' .. table.concat(args, ',')
-        .. '],"request":{"protocol":1,"request_id":' .. json_string(request.id)
+        .. '],"request":{"protocol":2,"request_id":' .. json_string(request.id)
         .. ',"shell":{"kind":"cmd","version":' .. json_string(version)
         .. '},"cwd":' .. json_string(request.cwd) .. ',"buffer":' .. json_string(request.buffer)
         .. ',"cursor":' .. tostring(request.cursor) .. '}}'
@@ -96,7 +103,8 @@ end
 local function read_process(command)
     -- Only call inside a live asynchronous prompt coroutine. A read in a key
     -- callback or a synchronous prompt filter would block the editor.
-    local pipe, close = io.popenyield(command, 'rb')
+    -- CMD /c strips the outer quote pair; preserve quoted executable/arguments.
+    local pipe, close = io.popenyield('"' .. command .. '"', 'rb')
     if not pipe then error('helper unavailable') end
     local text = pipe:read(65537) or ''
     if type(close) == 'function' then close() else pipe:close() end
@@ -164,7 +172,8 @@ function reedline_ai_request(buffer)
     end
     serial = serial + 1
     local request = {id = 'clink-' .. tostring(os.getpid()) .. '-' .. tostring(serial),
-        buffer = line, cursor = buffer:getcursor() - 1, cwd = os.getcwd(), generation = generation, config = config}
+        buffer = line, cursor = buffer:getcursor() - 1, cwd = os.getcwd(), generation = generation, config = config,
+        created = os.time()}
     if #envelope(request) > 24576 then
         message(buffer, 'request exceeds the transport budget.')
         return
@@ -185,7 +194,7 @@ function reedline_ai_preview(buffer)
         message(buffer, 'request failed, timed out, or returned an invalid response.')
     elseif not request.response then
         message(buffer, 'still pending; editing remains available.')
-    elseif #request.response.insertion == 0 then
+    elseif request.response.result == request.buffer then
         pending = nil
         message(buffer, 'no suggestion.')
     else
@@ -195,6 +204,7 @@ function reedline_ai_preview(buffer)
             message(buffer, 'acceptance blocked by risk review. No override is implemented.')
         else
             request.previewed = true
+            request.preview_time = request.preview_time or os.time()
             message(buffer, 'Ctrl-X then A inserts only. Enter remains the separate native execution key.')
         end
     end
@@ -211,6 +221,9 @@ function reedline_ai_accept(buffer)
     -- Clink indices are one-based UTF-8 byte positions. Insert in one undo group.
     -- No Readline accept-line command, CMD evaluation, or synthetic Enter is used.
     buffer:beginundogroup()
+    if request.response.replacement then
+        buffer:remove(1, #request.buffer + 1)
+    end
     buffer:insert(request.response.insertion)
     buffer:setcursor(request.response.cursor + 1)
     buffer:endundogroup()
@@ -220,6 +233,14 @@ end
 function reedline_ai_cancel(buffer)
     pending = nil
     if buffer then message(buffer, 'discarded; any running worker remains bounded by its 15-second timeout.') end
+end
+
+local function clear_binding(key, map)
+    -- Clink 1.9.35 rejects documented nil; an empty name clears the binding
+    -- but reports false. Verify actual state instead of trusting that return.
+    pcall(rl.setbinding, key, nil, map)
+    if rl.getbinding(key, map) ~= nil then rl.setbinding(key, '', map) end
+    assert(rl.getbinding(key, map) == nil, 'Could not remove adapter binding')
 end
 
 function reedline_ai_enable(options)
@@ -250,7 +271,7 @@ function reedline_ai_enable(options)
     for _, map in ipairs(maps) do
         for _, binding in ipairs(keys) do
             if not rl.setbinding(binding.key, '"luafunc:' .. binding.name .. '"', map) then
-                for _, old in ipairs(installed) do rl.setbinding(old.key, nil, old.map) end
+                for _, old in ipairs(installed) do clear_binding(old.key, old.map) end
                 return false
             end
             installed[#installed + 1] = {key = binding.key, map = map}
@@ -265,7 +286,7 @@ function reedline_ai_disable()
     for _, map in ipairs(maps) do
         for _, binding in ipairs(keys) do
             if rl.getbinding(binding.key, map) == '"luafunc:' .. binding.name .. '"' then
-                rl.setbinding(binding.key, nil, map)
+                clear_binding(binding.key, map)
             end
         end
     end

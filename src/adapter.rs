@@ -2,6 +2,7 @@
 use crate::{
     backend::Backend,
     context::{Context, unsafe_char},
+    project_memory::ProjectMemory,
     risk::{RiskPolicy, RiskReview, review},
     shell::ShellContext,
 };
@@ -29,6 +30,8 @@ pub struct Response {
     pub buffer: String,
     pub cursor: usize,
     pub insertion: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
     pub result: String,
     pub result_cursor: usize,
     pub risk_review: RiskReview,
@@ -52,7 +55,16 @@ pub fn complete(
     request: Request,
     backend: &dyn Backend,
 ) -> Result<Response, Box<dyn std::error::Error>> {
-    if request.protocol != 1 {
+    complete_with_memory(request, backend, None)
+}
+
+/// Explicit configuration stays local; never includes cwd or memory in provider context.
+pub fn complete_with_memory(
+    request: Request,
+    backend: &dyn Backend,
+    memory: Option<&ProjectMemory>,
+) -> Result<Response, Box<dyn std::error::Error>> {
+    if !matches!(request.protocol, 1 | 2) {
         return Err("unsupported adapter protocol".into());
     }
     if request.request_id.is_empty()
@@ -69,7 +81,7 @@ pub fn complete(
     }
     // cwd is validated but deliberately never added to Context, read, or sent to a provider.
     let context = Context::new(&request.buffer, request.cursor)?.with_shell(request.shell)?;
-    let local = request.history_candidate.as_deref().and_then(|candidate| {
+    let history = request.history_candidate.as_deref().and_then(|candidate| {
         if candidate.len() > 8192
             || candidate.starts_with(char::is_whitespace)
             || candidate.chars().any(unsafe_char)
@@ -82,24 +94,41 @@ pub fn complete(
         (!insertion.is_empty() && crate::context::validate_insertion(insertion).is_ok())
             .then(|| insertion.to_owned())
     });
-    let insertion = if context.is_empty() {
-        String::new()
+    let local = if memory.is_some() {
+        crate::workflow::suggest_local(&context, memory)?
+            .filter(|suggestion| suggestion.source == "confirmed_workflow")
     } else {
-        match local {
-            Some(insertion) => insertion,
-            None => backend.complete(&context)?,
-        }
+        None
     };
-    let result = context.insert(&insertion)?;
+    let (insertion, replacement, result, result_cursor) = if let Some(local) = local {
+        if request.protocol != 2 {
+            return Err("configured workflows require adapter protocol 2".into());
+        }
+        let (result, cursor) = local.suggestion.apply(&request.buffer, request.cursor)?;
+        (String::new(), Some(result.clone()), result, cursor)
+    } else {
+        let insertion = if context.is_empty() {
+            String::new()
+        } else {
+            match history {
+                Some(insertion) => insertion,
+                None => backend.complete(&context)?,
+            }
+        };
+        let result = context.insert(&insertion)?;
+        let cursor = request.cursor + insertion.len();
+        (insertion, None, result, cursor)
+    };
     let risk_review = review(context.shell(), &result);
-    let additional_acceptance_required =
-        !insertion.is_empty() && risk_review.requires_confirmation(RiskPolicy::Confirm);
+    let additional_acceptance_required = (replacement.is_some() || !insertion.is_empty())
+        && risk_review.requires_confirmation(RiskPolicy::Confirm);
     Ok(Response {
-        protocol: 1,
+        protocol: request.protocol,
         request_id: request.request_id,
         buffer: request.buffer,
         cursor: request.cursor,
-        result_cursor: request.cursor + insertion.len(),
+        result_cursor,
+        replacement,
         insertion,
         result,
         risk_review,
@@ -152,7 +181,7 @@ mod tests {
     #[test]
     fn validates_protocol_identity_cursor_cwd() {
         let mut r = request("git", 3);
-        r.protocol = 2;
+        r.protocol = 3;
         assert!(complete(r, &Never).is_err());
         let mut r = request("git", 3);
         r.request_id = "a\nb".into();
@@ -192,6 +221,61 @@ mod tests {
             r.history_candidate = Some(candidate.into());
             assert_eq!(complete(r, &NoHistory).unwrap().result, "echo x");
         }
+    }
+    #[test]
+    fn configured_workflow_never_calls_provider() {
+        let memory = ProjectMemory::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/project-memory.synthetic.json"
+        ))
+        .unwrap();
+        for kind in [
+            ShellKind::Bash,
+            ShellKind::PowerShell,
+            ShellKind::Cmd,
+            ShellKind::Nushell,
+        ] {
+            let mut req = request("启动监控", 6);
+            req.protocol = 2;
+            req.shell = ShellContext::new(kind);
+            let response = complete_with_memory(req, &Never, Some(&memory)).unwrap();
+            assert_eq!(response.replacement.as_ref(), Some(&response.result));
+            assert!(response.insertion.is_empty());
+            assert_eq!(response.result_cursor, response.result.len());
+            assert!(
+                !serde_json::to_string(&response)
+                    .unwrap()
+                    .contains("synthetic-private-path")
+            );
+        }
+    }
+    #[test]
+    fn unmatched_memory_does_not_become_provider_context() {
+        struct Inspect;
+        impl Backend for Inspect {
+            fn complete(&self, context: &Context) -> Result<String, BackendError> {
+                let serialized = serde_json::to_string(context).unwrap();
+                for private in [
+                    "synthetic-private-path",
+                    "/synthetic/projects",
+                    "CCTV",
+                    "environment",
+                ] {
+                    assert!(!serialized.contains(private));
+                }
+                Ok("ok".into())
+            }
+        }
+        let memory = ProjectMemory::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/project-memory.synthetic.json"
+        ))
+        .unwrap();
+        let mut req = request("echo ", 5);
+        req.protocol = 2;
+        let response = complete_with_memory(req, &Inspect, Some(&memory)).unwrap();
+        assert!(response.replacement.is_none());
+        assert_eq!(response.result, "echo ok");
     }
     struct Dangerous;
     impl Backend for Dangerous {

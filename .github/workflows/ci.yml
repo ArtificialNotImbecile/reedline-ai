@@ -41,3 +41,5 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoLogo -NoProfile -NonInteractive -File integrations/powershell/tests/Test-ReedlineAI.ps1 -Binary ./target/debug/reedline-ai.exe
+      - name: Adapter v1/v2 protocol contracts
+        run: python3 tests/adapter_v2_contract.py

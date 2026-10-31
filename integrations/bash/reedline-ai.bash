@@ -91,10 +91,15 @@ __rai_clear() {
     __rai_pending=0
     __rai_previewed=0
     __rai_confirmed=0
-    unset __rai_result __rai_result_cursor __rai_risk __rai_preview
+    unset __rai_result __rai_result_cursor __rai_risk __rai_preview __rai_created __rai_preview_time
 }
 
 __rai_matches() {
+    local now=$SECONDS
+    [[ -n ${__rai_created:-} ]] &&
+    (( now >= __rai_created && now - __rai_created < 30 )) &&
+    { [[ $__rai_previewed != 1 ]] ||
+      (( now >= __rai_preview_time && now - __rai_preview_time < 15 )); } &&
     [[ ${READLINE_LINE-} == "${__rai_buffer-}" &&
        ${READLINE_POINT-} == "${__rai_cursor-}" &&
        $PWD == "${__rai_cwd-}" &&
@@ -104,6 +109,11 @@ __rai_matches() {
 # Only drain an already-ready pipe. Inference never runs in a bind -x callback.
 __rai_collect() {
     local -a fields=()
+    if ! __rai_matches; then
+        __rai_clear
+        __rai_note 'reedline-ai: stale result discarded; request changed or expired.'
+        return 1
+    fi
     if ! IFS= builtin read -r -t 0 -u "$__rai_fd"; then
         __rai_note 'reedline-ai: pending; keep editing, then press Ctrl-x Ctrl-g to review.'
         return 1
@@ -135,6 +145,7 @@ __rai_collect() {
     __rai_result_cursor=${fields[2]}
     __rai_risk=${fields[3]}
     __rai_preview=${fields[4]}
+    __rai_preview_time=$SECONDS
     __rai_previewed=1
     __rai_confirmed=0
     __rai_note "reedline-ai preview (not executed): $__rai_preview"
@@ -183,6 +194,7 @@ __rai_invoke() {
         return 0
     fi
     __rai_clear
+    __rai_created=$SECONDS
     __rai_buffer=$READLINE_LINE
     __rai_cursor=$READLINE_POINT
     __rai_cwd=$PWD

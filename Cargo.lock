@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "reedline-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -961,6 +961,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "unicode-width",
 ]
 

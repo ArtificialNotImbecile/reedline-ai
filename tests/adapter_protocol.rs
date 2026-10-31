@@ -70,7 +70,7 @@ fn malformed_private_request_is_redacted() {
     }
 }
 #[test]
-fn adapter_rejects_history_config_and_shell_override() {
+fn adapter_rejects_history_missing_config_and_shell_override() {
     for args in [
         vec!["--history-file", "synthetic-never-create"],
         vec!["--ai-history"],
@@ -92,4 +92,51 @@ fn adapter_risk_gate_is_not_disabled_by_cli_policy() {
     assert!(output.status.success());
     let r: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(r["additional_acceptance_required"], true);
+}
+
+#[test]
+fn explicit_workflow_v2_replaces_locally_and_v1_stays_insertion_only() {
+    let memory = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/project-memory.synthetic.json"
+    );
+    for shell in ["bash", "powershell", "nushell", "cmd"] {
+        let mut req = request("启动监控", 6);
+        req["protocol"] = json!(2);
+        req["shell"]["kind"] = json!(shell);
+        let output = run(req.to_string().as_bytes(), &["--config", memory]);
+        assert!(
+            output.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["protocol"], 2);
+        assert_eq!(reply["insertion"], "");
+        assert_eq!(reply["result"], reply["replacement"]);
+        assert_eq!(
+            reply["result_cursor"],
+            reply["result"].as_str().unwrap().len()
+        );
+        assert!(reply["result"].as_str().unwrap().contains("app.py"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-do-not-read"));
+        req["protocol"] = json!(1);
+        assert!(
+            !run(req.to_string().as_bytes(), &["--config", memory])
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+fn v2_without_explicit_memory_retains_strict_insertion() {
+    let mut req = request("echo 世", 8);
+    req["protocol"] = json!(2);
+    let output = run(req.to_string().as_bytes(), &[]);
+    assert!(output.status.success());
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(reply.get("replacement").is_none());
+    assert_eq!(reply["result"], "echo 世界");
+    assert_eq!(reply["result_cursor"], 11);
 }

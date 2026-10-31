@@ -26,3 +26,7 @@ pub mod mobile;
 pub mod adapter;
 
 pub mod adapter_install;
+
+pub mod settings;
+
+mod stream;

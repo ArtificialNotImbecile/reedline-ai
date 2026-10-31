@@ -30,7 +30,7 @@ def reedline-ai-safe-text [text: string] {
 # Fail closed even for a malformed or mismatched local backend response.
 def reedline-ai-check-response [request: record, response: record] {
     try {
-        if $response.protocol != 1 or $response.request_id != $request.request_id { return false }
+        if $request.protocol not-in [1 2] or $response.protocol != $request.protocol or $response.request_id != $request.request_id { return false }
         if $response.buffer != $request.buffer or $response.cursor != $request.cursor { return false }
         if ($response.insertion | describe) != 'string' or ($response.result | describe) != 'string' { return false }
         if ($response.additional_acceptance_required | describe) != 'bool' { return false }
@@ -39,12 +39,31 @@ def reedline-ai-check-response [request: record, response: record] {
         if not (reedline-ai-safe-text $response.insertion) or not (reedline-ai-safe-text $response.result) { return false }
         if ($response.insertion | str length --utf-8-bytes) > 1024 or ($response.insertion | str contains '```') { return false }
         if ($response.result | str length --utf-8-bytes) > 9216 { return false }
-        let prefix = if $request.cursor == 0 { '' } else { $request.buffer | str substring --utf-8-bytes 0..<($request.cursor) }
-        let suffix = $request.buffer | str substring --utf-8-bytes ($request.cursor)..
-        if $response.result != ($prefix + $response.insertion + $suffix) { return false }
-        if $response.result_cursor != ($request.cursor + ($response.insertion | str length --utf-8-bytes)) { return false }
+        if 'replacement' in ($response | columns) {
+            if $request.protocol != 2 or ($response.replacement | describe) != 'string' or $response.insertion != '' { return false }
+            if not (reedline-ai-safe-text $response.replacement) or ($response.replacement | str contains '```') or ($response.replacement | str length --utf-8-bytes) > 8192 { return false }
+            if $response.result != $response.replacement or $response.result_cursor != ($response.replacement | str length --utf-8-bytes) { return false }
+        } else {
+            let prefix = if $request.cursor == 0 { '' } else { $request.buffer | str substring --utf-8-bytes 0..<($request.cursor) }
+            let suffix = $request.buffer | str substring --utf-8-bytes ($request.cursor)..
+            if $response.result != ($prefix + $response.insertion + $suffix) { return false }
+            if $response.result_cursor != ($request.cursor + ($response.insertion | str length --utf-8-bytes)) { return false }
+        }
         reedline-ai-byte-to-grapheme $response.result $response.result_cursor | ignore
         true
+    } catch { false }
+}
+
+# Wall-clock expiry rejects times earlier than recorded timestamps; re-preview never renews it.
+def reedline-ai-state-fresh [state: record] {
+    try {
+        let now = date now
+        if $now < $state.created_at or $now >= ($state.created_at + 30sec) { return false }
+        if $state.ready == null {
+            true
+        } else {
+            $now >= $state.previewed_at and $now < ($state.previewed_at + 15sec)
+        }
     } catch { false }
 }
 
@@ -89,7 +108,7 @@ def --env reedline-ai-request [] {
     let cursor = reedline-ai-grapheme-to-byte $buffer (commandline get-cursor)
     let tag = random int 1000000000..2000000000
     mut request = {
-        protocol: 1
+        protocol: 2
         request_id: (random uuid)
         shell: {kind: nushell, version: (version | get version)}
         cwd: $env.PWD
@@ -126,13 +145,18 @@ def --env reedline-ai-request [] {
         } catch { {ok: false} }
         $outcome | job send 0 --tag $tag
     }
-    $env.REEDLINE_AI_STATE = {request: $request, tag: $tag, worker: $worker, ready: null}
+    $env.REEDLINE_AI_STATE = {request: $request, tag: $tag, worker: $worker, ready: null, created_at: (date now), previewed_at: null}
     print 'reedline-ai: requested. Keep editing; Ctrl+Alt+P previews when ready.'
 }
 
 def --env reedline-ai-preview [] {
     let state = $env.REEDLINE_AI_STATE? | default null
     if $state == null { return }
+    if not (reedline-ai-state-fresh $state) {
+        reedline-ai-cancel --quiet
+        print 'reedline-ai: request or preview expired; request again.'
+        return
+    }
     if (commandline) != $state.request.buffer or (reedline-ai-grapheme-to-byte (commandline) (commandline get-cursor)) != $state.request.cursor or $env.PWD != $state.request.cwd {
         reedline-ai-cancel --quiet
         print 'reedline-ai: discarded a stale result; request again for the current line.'
@@ -153,7 +177,7 @@ def --env reedline-ai-preview [] {
         return
     }
     let response = $outcome.response
-    if ($response.insertion | is-empty) {
+    if ($response.insertion | is-empty) and ('replacement' not-in ($response | columns)) {
         reedline-ai-cancel --quiet
         print 'reedline-ai: no suggestion.'
         return
@@ -164,7 +188,7 @@ def --env reedline-ai-preview [] {
         print 'reedline-ai: acceptance blocked by risk review. No extra-confirmation override is implemented.'
         return
     }
-    $env.REEDLINE_AI_STATE = ($state | upsert ready $response | upsert worker null)
+    $env.REEDLINE_AI_STATE = ($state | upsert ready $response | upsert worker null | upsert previewed_at (date now))
     print 'Ctrl+Alt+A inserts this preview only. Enter remains the separate native execution key.'
 }
 
@@ -172,6 +196,11 @@ def --env reedline-ai-accept [] {
     let state = $env.REEDLINE_AI_STATE? | default null
     if $state == null or $state.ready == null { return }
     let response = $state.ready
+    if not (reedline-ai-state-fresh $state) {
+        reedline-ai-cancel --quiet
+        print 'reedline-ai: request or preview expired; request again.'
+        return
+    }
     if (commandline) != $state.request.buffer or (reedline-ai-grapheme-to-byte (commandline) (commandline get-cursor)) != $state.request.cursor or $env.PWD != $state.request.cwd {
         reedline-ai-cancel --quiet
         print 'reedline-ai: stale preview discarded.'

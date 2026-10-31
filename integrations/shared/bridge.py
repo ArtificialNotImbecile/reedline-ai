@@ -90,7 +90,7 @@ def check_request(request: object) -> dict:
     required = {"protocol", "request_id", "shell", "cwd", "buffer", "cursor"}
     if not isinstance(request, dict) or not required <= set(request) or set(request) - required - {"history_candidate"}:
         raise ValueError("invalid request")
-    if type(request["protocol"]) is not int or request["protocol"] != 1:
+    if type(request["protocol"]) is not int or request["protocol"] not in (1, 2):
         raise ValueError("invalid protocol")
     if not isinstance(request["request_id"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", request["request_id"]):
         raise ValueError("invalid identity")
@@ -120,10 +120,18 @@ def check_response(request: dict, response: object) -> tuple[dict, bool]:
         raise ValueError("invalid result")
     source = request["buffer"].encode("utf-8")
     insertion = response["insertion"].encode("utf-8")
-    expected = source[:request["cursor"]] + insertion + source[request["cursor"]:]
+    if "replacement" in response:
+        replacement = response["replacement"]
+        if request["protocol"] != 2 or insertion or not safe_text(replacement, 8192) or "```" in replacement:
+            raise ValueError("invalid replacement")
+        expected = replacement.encode("utf-8")
+        expected_cursor = len(expected)
+    else:
+        expected = source[:request["cursor"]] + insertion + source[request["cursor"]:]
+        expected_cursor = request["cursor"] + len(insertion)
     if response["result"].encode("utf-8") != expected:
         raise ValueError("modified source")
-    if type(response.get("result_cursor")) is not int or response["result_cursor"] != request["cursor"] + len(insertion):
+    if type(response.get("result_cursor")) is not int or response["result_cursor"] != expected_cursor:
         raise ValueError("invalid result cursor")
     review = response.get("risk_review")
     if not isinstance(review, dict) or type(review.get("incomplete")) is not bool:
@@ -353,8 +361,8 @@ def run_backend(envelope: dict, timeout: float = TIMEOUT_SECONDS) -> dict:
 
 def response_frame(request: dict, response: dict) -> str:
     response, blocked = check_response(request, response)
-    fields = ["RLA1", request["request_id"].encode().hex(), request["buffer"].encode().hex(),
-              str(request["cursor"]), response["insertion"].encode().hex(),
+    fields = ["RLA2R" if "replacement" in response else "RLA1", request["request_id"].encode().hex(), request["buffer"].encode().hex(),
+              str(request["cursor"]), response.get("replacement", response["insertion"]).encode().hex(),
               response["result"].encode().hex(), str(response["result_cursor"]), "1" if blocked else "0"]
     return "\n".join(fields) + "\n"
 

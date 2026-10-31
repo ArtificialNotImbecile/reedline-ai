@@ -15,6 +15,162 @@ pub struct AdapterArgs {
     #[command(subcommand)]
     action: Action,
 }
+#[derive(Args)]
+pub struct InitArgs {
+    /// Shell where the printed code will be evaluated; never auto-detected.
+    #[arg(long, value_enum)]
+    pub shell: ShellKind,
+    /// Force offline examples even when setup settings exist.
+    #[arg(long)]
+    pub mock: bool,
+}
+
+/// Print trusted, quoted activation code only; diagnostics remain on stderr.
+/// This never edits a profile, starts a network request, or executes a suggestion.
+pub fn init(args: InitArgs) -> Result<(), Error> {
+    if !matches!(args.shell, ShellKind::Bash | ShellKind::PowerShell) {
+        return Err("one-line init currently supports Bash and PowerShell; use the documented adapter install flow for Nushell/CMD".into());
+    }
+    let root = crate::settings::directory()?;
+    let settings_path = root.join("settings.json");
+    let configured = !args.mock && settings_path.try_exists()?;
+    if configured {
+        crate::settings::load(&settings_path)?;
+    }
+    crate::settings::private_directory(&root)?;
+    let assets_root = root.join("adapters");
+    crate::settings::private_directory(&assets_root)?;
+    let package = package(args.shell);
+    if package.experimental {
+        eprintln!(
+            "This adapter is experimental; consult the platform validation notes before relying on it."
+        );
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    package.files.hash(&mut hash);
+    let shell_name = match args.shell {
+        ShellKind::Bash => "bash",
+        _ => "powershell",
+    };
+    let dir = assets_root.join(format!("{shell_name}-{:016x}", hash.finish()));
+    if dir.try_exists()? {
+        validate_assets(&dir, package.files)?;
+    } else {
+        write_assets(&dir, package.files)?;
+    }
+    let binary = std::env::current_exe()?;
+    let entry = dir.join(package.entrypoint);
+    let binary = binary.to_str().ok_or("binary path must be UTF-8")?;
+    let entry = entry.to_str().ok_or("adapter path must be UTF-8")?;
+    if binary
+        .chars()
+        .chain(entry.chars())
+        .any(crate::context::unsafe_char)
+    {
+        return Err("init paths must not contain control characters".into());
+    }
+    let bash_quote = |s: &str| format!("'{}'", s.replace('\'', "'\"'\"'"));
+    let ps_quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let backend = if configured {
+        "--configured"
+    } else {
+        "--backend mock"
+    };
+    match args.shell {
+        ShellKind::Bash => println!(
+            "if [[ ${{__rai_loaded:-0}} == 1 ]]; then builtin printf '%s\\n' 'reedline-ai: already enabled; run reedline_ai_disable before init again.' >&2; false; else REEDLINE_AI_BIN={}; REEDLINE_AI_ARGS=({backend}); source {}; fi",
+            bash_quote(binary),
+            bash_quote(entry)
+        ),
+        ShellKind::PowerShell => {
+            let arguments = if configured {
+                "@('--configured')"
+            } else {
+                "@('--backend', 'mock')"
+            };
+            println!(
+                "if (Get-Module ReedlineAI) {{ throw 'Run Disable-ReedlineAI; Remove-Module ReedlineAI before init again.' }}; Import-Module {}; Enable-ReedlineAI -Binary {} -BackendArguments {arguments} -RequestChord F6 -AcceptChord F7 -CancelChord F8",
+                ps_quote(entry),
+                ps_quote(binary)
+            );
+        }
+        _ => unreachable!(),
+    }
+    eprintln!(
+        "Session init: {}. Requests send only the current command and shell metadata; never type secrets. No profile changed. Suggestions are not executed.",
+        if configured {
+            "configured HTTP (explicit request keys)"
+        } else {
+            "offline mock"
+        }
+    );
+    Ok(())
+}
+
+fn write_assets(directory: &Path, files: &[(&str, &str)]) -> Result<(), Error> {
+    fs::create_dir(directory)
+        .map_err(|_| "adapter directory must be new and its parent must exist")?;
+    for child in files
+        .iter()
+        .filter_map(|(name, _)| name.split_once('/').map(|(dir, _)| dir))
+        .collect::<BTreeSet<_>>()
+    {
+        fs::create_dir(directory.join(child))?;
+    }
+    for (name, contents) in files {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(directory.join(name))?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+fn validate_assets(directory: &Path, files: &[(&str, &str)]) -> Result<(), Error> {
+    let top = files
+        .iter()
+        .map(|(name, _)| name.split('/').next().expect("asset path"))
+        .collect();
+    check_entries(directory, &top)?;
+    let dirs = files
+        .iter()
+        .filter_map(|(name, _)| name.split_once('/').map(|(dir, _)| dir))
+        .collect::<BTreeSet<_>>();
+    for child in dirs {
+        let expected = files
+            .iter()
+            .filter_map(|(name, _)| {
+                name.split_once('/')
+                    .filter(|(dir, _)| *dir == child)
+                    .map(|(_, file)| file)
+            })
+            .collect();
+        check_entries(&directory.join(child), &expected)?;
+    }
+    for (name, contents) in files {
+        let path = directory.join(name);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.len() != contents.len() as u64 {
+            return Err("adapter assets changed; refusing to load or remove them".into());
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(contents.len() as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes != contents.as_bytes() {
+            return Err("adapter assets changed; refusing to load or remove them".into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum Action {
     /// Extract bundled adapter assets to a NEW directory. Never edits a profile.

@@ -5,6 +5,7 @@ Requires populated Cargo cache; never changes user profiles or calls providers.
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,12 @@ with tempfile.TemporaryDirectory(prefix="reedline-installed-nu-") as temporary:
     env.pop("REEDLINE_AI_API_KEY", None)
     env["PATH"] = str(NU.parent) + os.pathsep + env["PATH"]
     root = home / "cargo-root"
+    # Preserve the populated compiler/cache while isolating application HOME.
+    env.setdefault("CARGO_HOME", str(Path.home() / ".cargo"))
+    env.setdefault("RUSTUP_HOME", str(Path.home() / ".rustup"))
+    if shutil.which("rustup"):
+        env.setdefault("RUSTUP_TOOLCHAIN", subprocess.check_output(
+            ["rustup", "show", "active-toolchain"], cwd=ROOT, text=True).split()[0])
     subprocess.run(["cargo", "install", "--path", str(ROOT), "--root", str(root),
                     "--debug", "--locked", "--offline"], cwd=home, env=env, check=True)
     binary = root / "bin/reedline-ai"

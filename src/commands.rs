@@ -104,6 +104,10 @@ impl ConfigArgs {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Configure Base URL, model and an optional hidden API key. No network calls.
+    Setup(crate::settings::SetupArgs),
+    /// Print session-only initialization code for Bash or PowerShell.
+    Init(crate::adapter_install::InitArgs),
     /// Install, check or remove explicitly selected native-shell adapter assets.
     Adapter(crate::adapter_install::AdapterArgs),
     /// Offline structured-edit preview. No process execution or HTTP calls.
@@ -167,6 +171,8 @@ pub enum MemoryCommand {
 
 pub fn run(command: Commands) -> Result<(), Error> {
     match command {
+        Commands::Setup(args) => crate::settings::run(args)?,
+        Commands::Init(args) => crate::adapter_install::init(args)?,
         Commands::Adapter(args) => crate::adapter_install::run(args)?,
         Commands::Suggest(args) => {
             let shell = args

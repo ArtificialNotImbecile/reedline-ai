@@ -77,7 +77,7 @@ def read_request() -> dict:
             raise Failure("empty")
         if len(buffer.encode("utf-8")) > MAX_BUFFER or not single_line(buffer) or not byte_cursor(buffer, cursor):
             raise ValueError("line")
-        request = {"protocol": 1, "request_id": request_id, "shell": {"kind": "bash", "version": version},
+        request = {"protocol": 2, "request_id": request_id, "shell": {"kind": "bash", "version": version},
                 "cwd": cwd, "buffer": buffer, "cursor": cursor}
         if candidate and len(candidate.encode("utf-8")) <= MAX_BUFFER and single_line(candidate):
             request["history_candidate"] = candidate
@@ -98,7 +98,7 @@ def no_duplicates(pairs: list) -> dict:
 def validate(raw: bytes, request: dict) -> tuple[str, int, bool, str]:
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=no_duplicates)
-        if not isinstance(value, dict) or type(value.get("protocol")) is not int or value["protocol"] != 1:
+        if not isinstance(value, dict) or type(value.get("protocol")) is not int or value["protocol"] != request["protocol"] or request["protocol"] not in (1, 2):
             raise ValueError("protocol")
         for key in ("request_id", "buffer", "cursor"):
             if type(value.get(key)) is not type(request[key]) or value[key] != request[key]:
@@ -110,12 +110,18 @@ def validate(raw: bytes, request: dict) -> tuple[str, int, bool, str]:
             raise ValueError("insertion limit or code fence")
         original = request["buffer"].encode("utf-8")
         point = request["cursor"]
-        expected = original[:point] + insertion.encode("utf-8") + original[point:]
-        if result.encode("utf-8") != expected or not byte_cursor(result, cursor):
-            raise ValueError("insertion")
-        if cursor != point + len(insertion.encode("utf-8")):
-            raise ValueError("cursor")
-        if not insertion:
+        if "replacement" in value:
+            replacement = value["replacement"]
+            if request["protocol"] != 2 or not isinstance(replacement, str) or insertion or not single_line(replacement) or len(replacement.encode("utf-8")) > MAX_BUFFER or "```" in replacement:
+                raise ValueError("replacement")
+            expected = replacement.encode("utf-8")
+            expected_cursor = len(expected)
+        else:
+            expected = original[:point] + insertion.encode("utf-8") + original[point:]
+            expected_cursor = point + len(insertion.encode("utf-8"))
+        if result.encode("utf-8") != expected or not byte_cursor(result, cursor) or cursor != expected_cursor:
+            raise ValueError("result")
+        if result == request["buffer"]:
             raise Failure("empty")
         review = value["risk_review"]
         required = value["additional_acceptance_required"]

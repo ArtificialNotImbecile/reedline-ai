@@ -15,6 +15,7 @@ export TMPDIR="$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile
 
 python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 -m unittest discover -s integrations/shared -p 'test_*.py'
+python3 tests/adapter_v2_contract.py
 
 case "$(uname -s)" in
   Linux|Darwin) ;;
@@ -37,6 +38,8 @@ python3 scripts/pty_smoke.py
 python3 scripts/pty_smoke.py target/release/reedline-ai
 python3 scripts/pty_native.py
 python3 scripts/pty_native.py target/release/reedline-ai
+python3 scripts/pty_streaming.py
+python3 scripts/pty_streaming.py target/release/reedline-ai
 python3 scripts/pty_risk.py
 python3 scripts/pty_risk.py target/release/reedline-ai
 
@@ -48,5 +51,7 @@ python3 scripts/pty_bash_adapter.py
 python3 scripts/pty_bash_adapter.py target/release/reedline-ai
 python3 scripts/pty_installed_bash.py
 python3 scripts/pty_bash_startup.py
+python3 scripts/pty_setup.py
+python3 scripts/pty_setup.py target/release/reedline-ai
 
 printf '\nLocal CI passed on %s. No hosted workflow or remote model API was invoked.\n' "$(uname -s)"

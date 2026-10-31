@@ -56,40 +56,61 @@ def send(data, wait=0.25):
     pump(wait)
 
 
+def expect_after(marker, start, timeout=8):
+    """Wait for an observed UI transition, not a fixed host-speed assumption."""
+    deadline = time.monotonic() + timeout
+    while marker not in transcript[start:] and time.monotonic() < deadline:
+        pump(0.05)
+    assert marker in transcript[start:], bytes(transcript[start:])
+
+
+def preview():
+    # Independent risk cases must not select a native-history candidate left by
+    # the previous edited submission: native history deliberately has priority.
+    send(b"\x03", 0.1)
+    start = len(transcript)
+    send(b":history-clear\r", 0.05)
+    expect_after(b"Local history and AI cache cleared.", start)
+    start = len(transcript)
+    send(b"run Danger\t", 0.05)
+    expect_after(b"F2", start)
+
+
 try:
     pump(0.5)
     # A risky replacement is visible, but ordinary Enter must not insert it.
-    send(b"run Danger\t", 0.3)
+    preview()
     assert b"F2" in transcript
     start = len(transcript)
     send(b"\r\r")
-    assert b"Accepted (not executed): run Danger" in transcript[start:], bytes(transcript[start:])
+    expect_after(b"Accepted (not executed): run Danger", start)
     assert b"Accepted (not executed): 'rm'" not in transcript[start:]
     # Acknowledge the displayed candidate, then native Enter inserts; second submits.
-    send(b"run Danger\t", 0.3)
+    preview()
     send(b"\x1bOQ", 0.2)  # xterm F2
     start = len(transcript)
     send(b"\r\r", 0.3)
-    assert b"Accepted (not executed): 'rm' '-rf' '/synthetic/disposable'" in transcript[start:], bytes(transcript[start:])
+    expect_after(b"Accepted (not executed): 'rm' '-rf' '/synthetic/disposable'", start)
     # Cancellation/reopening must not retain acknowledgment.
-    send(b"run Danger\t", 0.3)
+    preview()
     send(b"\x1bOQ")
     send(b"\x1b")
     send(b"\t")
     start = len(transcript)
     send(b"\r\r")
-    assert b"Accepted (not executed): run Danger" in transcript[start:], bytes(transcript[start:])
+    expect_after(b"Accepted (not executed): run Danger", start)
     # Input ordered batch: acknowledgment, edit, Enter cannot apply stale preview.
-    send(b"run Danger\t", 0.3)
+    preview()
     start = len(transcript)
     send(b"\x1bOQx\r\r", 0.3)
+    expect_after(b"Accepted (not executed): run Dangerx", start)
     assert b"Accepted (not executed): 'rm'" not in transcript[start:], bytes(transcript[start:])
     send(b"\x03")
     # An acknowledgment arriving after Enter in the same batch is too late.
-    send(b"run Danger\t", 0.3)
+    preview()
     start = len(transcript)
     send(b"\r\x1bOQ\r", 0.3)
-    assert b"Accepted (not executed): run Danger" in transcript[start:], bytes(transcript[start:])
+    expect_after(b"Accepted (not executed): run Danger", start)
     # Generated FIM with incomplete git review uses the same acknowledgment gate.
     send(b"git  --short")
     send(b"\x01" + b"\x1b[C" * 4)
@@ -97,7 +118,7 @@ try:
     send(b"\x1bOQ")
     start = len(transcript)
     send(b"\r\r", 0.3)
-    assert b"Accepted (not executed): git status --short" in transcript[start:], bytes(transcript[start:])
+    expect_after(b"Accepted (not executed): git status --short", start)
     send(b":quit\r")
     process.wait(timeout=3)
     print("PTY risk PASS: additional acceptance, cancellation, batched edit, whole-result FIM review")
